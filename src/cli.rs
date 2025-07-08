@@ -1,0 +1,127 @@
+use std::{net::SocketAddr, path::PathBuf, time::Duration};
+
+use clap::{Args, Parser};
+use fqdn::FQDN;
+use humantime::parse_duration;
+use ic_bn_lib::{
+    http::{self, dns},
+    utils::distributor::Strategy,
+};
+use url::Url;
+
+use crate::core::{AUTHOR_NAME, SERVICE_NAME};
+
+#[derive(Parser)]
+#[clap(name = SERVICE_NAME)]
+#[clap(author = AUTHOR_NAME)]
+pub struct Cli {
+    #[command(flatten, next_help_heading = "Listen")]
+    pub listen: Listen,
+
+    #[command(flatten, next_help_heading = "HTTP Server")]
+    pub http_server: http::server::cli::HttpServer,
+
+    #[command(flatten, next_help_heading = "HTTP Client")]
+    pub http_client: http::client::cli::HttpClient,
+
+    #[command(flatten, next_help_heading = "Backends")]
+    pub backends: Backends,
+
+    #[command(flatten, next_help_heading = "Network")]
+    pub network: Network,
+
+    #[command(flatten, next_help_heading = "DNS")]
+    pub dns: dns::cli::Dns,
+
+    #[command(flatten, next_help_heading = "Certificates")]
+    pub cert: Cert,
+
+    #[command(flatten, next_help_heading = "Misc")]
+    pub misc: Misc,
+}
+
+#[derive(Args)]
+pub struct Listen {
+    /// Where to listen for requests
+    #[clap(env, long, default_value = "127.0.0.1:8443")]
+    pub listen: SocketAddr,
+}
+
+#[derive(Args)]
+pub struct Network {
+    /// Number of HTTP clients to create to spread the load over
+    #[clap(env, long, default_value = "8", value_parser = clap::value_parser!(u16).range(1..))]
+    pub network_http_client_count: u16,
+
+    /// Bypass verification of TLS certificates for all outgoing requests.
+    /// *** Dangerous *** - use only for testing.
+    #[clap(env, long)]
+    pub network_http_client_insecure_bypass_tls_verification: bool,
+}
+
+#[derive(Args)]
+pub struct Cert {
+    /// Read certificates from given files.
+    /// Each file should be PEM-encoded concatenated certificate chain with a private key.
+    #[clap(env, long, value_delimiter = ',')]
+    pub cert_provider_file: Vec<PathBuf>,
+
+    /// Request certificates from the 'certificate-issuer' instances reachable over given URLs.
+    /// Also proxies the `/registrations` path to those issuers.
+    #[clap(env, long, value_delimiter = ',')]
+    pub cert_provider_issuer_url: Vec<Url>,
+
+    /// How frequently to refresh certificate issuers
+    #[clap(env, long, default_value = "30s", value_parser = parse_duration)]
+    pub cert_provider_issuer_poll_interval: Duration,
+
+    /// How frequently to poll providers for certificates
+    #[clap(env, long, default_value = "5s", value_parser = parse_duration)]
+    pub cert_provider_poll_interval: Duration,
+
+    /// Default certificate to serve when there's no SNI in the request.
+    /// Tries to find a certificate that covers given FQDN.
+    /// If not found or not specified - picks the first one available.
+    #[clap(env, long)]
+    pub cert_default: Option<FQDN>,
+}
+
+#[derive(Args)]
+pub struct Backends {
+    /// Path to the YAML file with backend configuration
+    #[clap(env, long)]
+    pub backends_config: PathBuf,
+
+    /// Strategy to use when choosing the next backend.
+    /// Can be "wrr" for Weighted Round Robin or "lor" for Least Outstanding Requests.
+    #[clap(env, long, default_value = "wrr")]
+    pub backends_strategy: Strategy,
+}
+
+#[derive(Args)]
+pub struct Misc {
+    /// Environment we run in to specify in the logs
+    #[clap(env, long, default_value = "dev")]
+    pub env: String,
+
+    /// Local hostname to identify in e.g. logs.
+    /// If not specified - tries to obtain it.
+    #[clap(env, long, default_value = hostname::get().unwrap().into_string().unwrap())]
+    pub hostname: String,
+
+    /// Number of Tokio threads to use to serve requests.
+    /// Defaults to the number of CPUs
+    #[clap(env, long)]
+    pub threads: Option<usize>,
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_cli() {
+        let args: Vec<&str> = vec![];
+        Cli::parse_from(args);
+    }
+}
