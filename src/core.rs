@@ -2,20 +2,22 @@ use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Error};
 use arc_swap::ArcSwapOption;
+use axum::Router;
 use ic_bn_lib::{
-    http::{self as bnhttp, ReqwestClientLeastLoaded, dns},
+    http::{
+        self as bnhttp, HyperClientLeastLoaded, ReqwestClient, ServerBuilder, dns,
+        redirect_to_https,
+    },
     rustls,
+    tasks::TaskManager,
     tls::{prepare_client_config, verify::NoopServerCertVerifier},
 };
-use tokio::{
-    select,
-    signal::unix::{SignalKind, signal},
-};
-use tokio_util::sync::CancellationToken;
+use prometheus::Registry;
+use tokio::signal::ctrl_c;
+use tracing::warn;
 
 use crate::{
-    cli::Cli,
-    routing::{BackendManager, setup_axum_router},
+    api::setup_api_axum_router, backend::BackendManager, cli::Cli, routing::setup_axum_router, tls,
 };
 
 pub const SERVICE_NAME: &str = "ic-http-lb";
@@ -28,6 +30,10 @@ pub static HOSTNAME: OnceLock<String> = OnceLock::new();
 pub async fn main(cli: &Cli) -> Result<(), Error> {
     ENV.set(cli.misc.env.clone()).unwrap();
     HOSTNAME.set(cli.misc.hostname.clone()).unwrap();
+
+    let mut tasks = TaskManager::new();
+    let registry = Registry::new_custom(Some(SERVICE_NAME.into()), None)
+        .context("unable to create Prometheus registry")?;
 
     // Create HTTP client to talk to the backends
     let mut http_client_opts: bnhttp::client::Options = (&cli.http_client).into();
@@ -45,56 +51,114 @@ pub async fn main(cli: &Cli) -> Result<(), Error> {
 
     http_client_opts.tls_config = Some(http_client_tls_config);
 
-    let resolver = dns::Resolver::new(dns::Options::default());
+    let resolver = dns::Resolver::new((&cli.dns).into());
+    let http_client_reqwest = Arc::new(
+        ReqwestClient::new(http_client_opts.clone(), Some(resolver.clone()))
+            .context("unable to setup HTTP client")?,
+    );
+
     let http_client = Arc::new(
-        ReqwestClientLeastLoaded::new(
+        HyperClientLeastLoaded::new(
             http_client_opts,
-            Some(resolver),
+            resolver,
             cli.network.network_http_client_count as usize,
             None,
         )
-        .context("unable to setup HTTP client")?,
+        .context("unable to build HTTP client")?,
     );
 
+    // Setup backend routing
     let backend_router = Arc::new(ArcSwapOption::empty());
-    let backend_manager = BackendManager::new(
-        http_client,
+    let backend_manager = Arc::new(BackendManager::new(
+        http_client.clone(),
         cli.backends.backends_config.clone(),
         backend_router.clone(),
+    ));
+
+    let axum_router_api = if cli.api.api_hostname.is_some() || cli.api.api_listen.is_some() {
+        Some(
+            setup_api_axum_router(cli, backend_manager.clone())
+                .context("unable to setup API Axum Router")?,
+        )
+    } else {
+        None
+    };
+
+    let axum_router = setup_axum_router(cli, axum_router_api.clone(), backend_router)
+        .context("unable to setup Axum Router")?;
+
+    // HTTP server metrics
+    let http_metrics = bnhttp::server::Metrics::new(&registry);
+
+    // Set up HTTP router (redirecting to HTTPS or serving all endpoints)
+    let axum_router_http = if !cli.listen.listen_insecure_serve_http_only {
+        Router::new().fallback(redirect_to_https)
+    } else {
+        axum_router.clone()
+    };
+
+    let server_http = Arc::new(
+        ServerBuilder::new(axum_router_http)
+            .listen_tcp(cli.listen.listen_http)
+            .with_options((&cli.http_server).into())
+            .with_metrics(http_metrics.clone())
+            .build()
+            .context("unable to build HTTP server")?,
     );
 
-    let axum_router = setup_axum_router(backend_router).context("unable to setup Axum Router")?;
+    // Start API server if configured
+    if let (Some(listen), Some(router)) = (cli.api.api_listen, axum_router_api) {
+        let server_api = Arc::new(
+            ServerBuilder::new(router)
+                .listen_tcp(listen)
+                .with_options((&cli.http_server).into())
+                .with_metrics(http_metrics.clone())
+                .build()
+                .context("unable to build API HTTP server")?,
+        );
 
-    let server = ic_bn_lib::http::ServerBuilder::new(axum_router)
-        .listen_tcp(cli.listen.listen)
-        .with_options((&cli.http_server).into())
-        .build()
-        .unwrap();
+        tasks.add("server_api", server_api);
+    }
 
+    // Create HTTPS server
+    if !cli.listen.listen_insecure_serve_http_only {
+        // Prepare TLS related stuff
+        let rustls_cfg = tls::setup(cli, &mut tasks, http_client_reqwest, &registry)
+            .await
+            .context("unable to setup TLS")?;
+
+        let server_https = Arc::new(
+            ServerBuilder::new(axum_router)
+                .listen_tcp(cli.listen.listen_https)
+                .with_options((&cli.http_server).into())
+                .with_metrics(http_metrics)
+                .with_rustls_config(rustls_cfg)
+                .build()
+                .context("unable to build HTTP server")?,
+        );
+
+        tasks.add("server_https", server_https);
+    }
+
+    // Load the initial config
     backend_manager
         .load_config()
         .await
         .context("unable to load backends config")?;
 
-    let mut sig = signal(SignalKind::hangup()).context("unable to listen for SIGHUP")?;
-    tokio::spawn(async move {
-        loop {
-            select! {
-                _ = sig.recv() => {
-                    println!("got config reload signal");
-                    match backend_manager.load_config().await {
-                        Ok(_) => println!("configuration reloaded"),
-                        Err(e) => println!("failed to reload config: {e:#}"),
-                    }
-                }
-            }
-        }
-    });
+    // Run background tasks
+    tasks.add("backend_manager", backend_manager);
+    tasks.add("server_http", server_http);
 
-    server
-        .serve(CancellationToken::new())
-        .await
-        .context("unable to listen")?;
+    tasks.start();
 
+    // Wait for the shutdown
+    warn!("Started");
+    ctrl_c().await.unwrap();
+
+    warn!("Shutdown signal received");
+    tasks.stop().await;
+
+    warn!("Shutdown complete");
     Ok(())
 }

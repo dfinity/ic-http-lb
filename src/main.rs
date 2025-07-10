@@ -1,16 +1,25 @@
-use anyhow::{Context, Error};
-use clap::Parser;
-use tracing::warn;
-
-use crate::cli::Cli;
-
+mod api;
+mod backend;
 mod cli;
 mod core;
+mod log;
 mod routing;
+mod tls;
+
+use anyhow::{Context, Error};
+use clap::Parser;
+use tikv_jemallocator::Jemalloc;
+use tracing::warn;
+
+use crate::{cli::Cli, log::setup_logging};
+
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
 
 fn main() -> Result<(), Error> {
     let cli = Cli::parse();
-    //log::setup_logging(&cli.log).context("unable to setup logging")?;
+    setup_logging(&cli.log).context("unable to setup logging")?;
+
     warn!("Env: {}, Hostname: {}", cli.misc.env, cli.misc.hostname);
 
     let threads = if let Some(v) = cli.misc.threads {
@@ -26,7 +35,7 @@ fn main() -> Result<(), Error> {
         .worker_threads(threads)
         .build()?
         .block_on(core::main(&cli))
-        .context("unable to start Tokio runtime")?;
+        .context("failure")?;
 
     Ok(())
 }

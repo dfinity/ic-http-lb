@@ -30,11 +30,17 @@ pub struct Cli {
     #[command(flatten, next_help_heading = "Network")]
     pub network: Network,
 
+    #[command(flatten, next_help_heading = "API")]
+    pub api: Api,
+
     #[command(flatten, next_help_heading = "DNS")]
     pub dns: dns::cli::Dns,
 
     #[command(flatten, next_help_heading = "Certificates")]
     pub cert: Cert,
+
+    #[command(flatten, next_help_heading = "Logging")]
+    pub log: Log,
 
     #[command(flatten, next_help_heading = "Misc")]
     pub misc: Misc,
@@ -42,9 +48,17 @@ pub struct Cli {
 
 #[derive(Args)]
 pub struct Listen {
-    /// Where to listen for requests
+    /// Where to listen for HTTP requests
+    #[clap(env, long, default_value = "127.0.0.1:8080")]
+    pub listen_http: SocketAddr,
+
+    /// Where to listen for HTTPS requests
     #[clap(env, long, default_value = "127.0.0.1:8443")]
-    pub listen: SocketAddr,
+    pub listen_https: SocketAddr,
+
+    /// Option to only serve HTTP instead for testing
+    #[clap(env, long)]
+    pub listen_insecure_serve_http_only: bool,
 }
 
 #[derive(Args)]
@@ -57,6 +71,32 @@ pub struct Network {
     /// *** Dangerous *** - use only for testing.
     #[clap(env, long)]
     pub network_http_client_insecure_bypass_tls_verification: bool,
+}
+
+#[derive(Args)]
+pub struct Api {
+    /// Where to listen for API requests in addition to the hostname below.
+    #[clap(env, long, requires = "api_token")]
+    pub api_listen: Option<SocketAddr>,
+
+    /// Specify a hostname on which to respond to API requests.
+    /// Requires `api_token` to be set.
+    /// If not specified - API isn't enabled.
+    #[clap(env, long, requires = "api_token")]
+    pub api_hostname: Option<FQDN>,
+
+    /// Set an API authentication token.
+    #[clap(env, long)]
+    pub api_token: Option<String>,
+
+    /// Whether to try to issue the certificate for the `api_hostname`.
+    /// If enabled - `api_acme_cache` needs to be set.
+    #[clap(env, long, requires = "api_acme_cache")]
+    pub api_acme: bool,
+
+    /// Path to a folder where to store ACME cache (account, certificates etc)
+    #[clap(env, long)]
+    pub api_acme_cache: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -96,6 +136,23 @@ pub struct Backends {
     /// Can be "wrr" for Weighted Round Robin or "lor" for Least Outstanding Requests.
     #[clap(env, long, default_value = "wrr")]
     pub backends_strategy: Strategy,
+}
+
+#[derive(Args)]
+pub struct Log {
+    /// Logging level to use
+    #[clap(env, long, default_value = "warn")]
+    pub log_level: tracing::Level,
+
+    /// Enables logging to stdout
+    #[clap(env, long)]
+    pub log_stdout: bool,
+
+    /// Enables logging of HTTP requests to stdout/journald/null.
+    /// This does not affect Clickhouse/Vector logging targets -
+    /// if they're enabled they'll log the requests in any case.
+    #[clap(env, long)]
+    pub log_requests: bool,
 }
 
 #[derive(Args)]
