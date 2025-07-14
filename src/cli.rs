@@ -5,7 +5,9 @@ use fqdn::FQDN;
 use humantime::parse_duration;
 use ic_bn_lib::{
     http::{self, dns},
+    tls::acme::AcmeUrl,
     utils::distributor::Strategy,
+    vector::cli::Vector,
 };
 use url::Url;
 
@@ -33,6 +35,9 @@ pub struct Cli {
     #[command(flatten, next_help_heading = "API")]
     pub api: Api,
 
+    #[command(flatten, next_help_heading = "Health")]
+    pub health: Health,
+
     #[command(flatten, next_help_heading = "DNS")]
     pub dns: dns::cli::Dns,
 
@@ -55,6 +60,10 @@ pub struct Listen {
     /// Where to listen for HTTPS requests
     #[clap(env, long, default_value = "127.0.0.1:8443")]
     pub listen_https: SocketAddr,
+
+    /// Where to listen for metrics
+    #[clap(env, long)]
+    pub listen_metrics: Option<SocketAddr>,
 
     /// Option to only serve HTTP instead for testing
     #[clap(env, long)]
@@ -94,9 +103,26 @@ pub struct Api {
     #[clap(env, long, requires = "api_acme_cache")]
     pub api_acme: bool,
 
+    /// Which ACME provider URL to use. Can be "le_stag", "le_prod" for LetsEncrypt, or a custom URL.
+    /// Defaults to "le_stag".
+    #[clap(env, long, default_value = "le_stag")]
+    pub api_acme_url: AcmeUrl,
+
     /// Path to a folder where to store ACME cache (account, certificates etc)
     #[clap(env, long)]
     pub api_acme_cache: Option<PathBuf>,
+}
+
+#[derive(Args)]
+pub struct Health {
+    /// How frequently to check health of the backends
+    #[clap(env, long, default_value = "1s", value_parser = parse_duration)]
+    pub health_check_interval: Duration,
+
+    /// How long to wait for the health check to finish.
+    /// This is applied on top of all HTTP timeouts and has precedence.
+    #[clap(env, long, default_value = "3s", value_parser = parse_duration)]
+    pub health_check_timeout: Duration,
 }
 
 #[derive(Args)]
@@ -107,7 +133,6 @@ pub struct Cert {
     pub cert_provider_file: Vec<PathBuf>,
 
     /// Request certificates from the 'certificate-issuer' instances reachable over given URLs.
-    /// Also proxies the `/registrations` path to those issuers.
     #[clap(env, long, value_delimiter = ',')]
     pub cert_provider_issuer_url: Vec<Url>,
 
@@ -148,11 +173,14 @@ pub struct Log {
     #[clap(env, long)]
     pub log_stdout: bool,
 
-    /// Enables logging of HTTP requests to stdout/journald/null.
-    /// This does not affect Clickhouse/Vector logging targets -
-    /// if they're enabled they'll log the requests in any case.
+    /// Enables logging of HTTP requests to stdout.
+    /// This does not affect Vector logging -
+    /// if it's enabled then it will log in any case.
     #[clap(env, long)]
     pub log_requests: bool,
+
+    #[command(flatten, next_help_heading = "Vector")]
+    pub vector: Vector,
 }
 
 #[derive(Args)]

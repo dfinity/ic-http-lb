@@ -3,6 +3,8 @@ mod backend;
 mod cli;
 mod core;
 mod log;
+mod metrics;
+mod middleware;
 mod routing;
 mod tls;
 

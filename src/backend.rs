@@ -5,21 +5,23 @@ use arc_swap::ArcSwapOption;
 use async_trait::async_trait;
 use axum::{body::Body, extract::Request, response::Response};
 use derive_new::new;
-use http::{Uri, uri::PathAndQuery};
+use http::{Uri, Version, uri::PathAndQuery};
 use ic_bn_lib::{
     http::{ClientHttp, proxy::proxy_http},
     tasks::Run,
     utils::{
         backend_router::BackendRouter,
-        distributor::ExecutesRequest,
-        health_check::{ChecksTarget, TargetState},
+        distributor::{self, ExecutesRequest},
+        health_check::{self, ChecksTarget, TargetState},
     },
 };
+use prometheus::Registry;
 use serde::{Deserialize, Serialize};
 use tokio::{
     fs, select,
     signal::unix::{SignalKind, signal},
-    sync::Mutex,
+    sync::{Mutex, MutexGuard},
+    time::timeout,
 };
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
@@ -39,15 +41,14 @@ pub struct BackendConf {
 /// Backend after preprocessing
 #[derive(Clone, Debug)]
 pub struct Backend {
-    name: String,
+    pub name: String,
     url: Url,
     uri_health: Uri,
-    weight: usize,
 }
 
 impl Display for Backend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} ({}, w{})", self.name, self.url, self.weight)
+        write!(f, "{}", self.name)
     }
 }
 
@@ -64,7 +65,6 @@ impl From<BackendConf> for Backend {
             name: v.name,
             url: v.url,
             uri_health,
-            weight: v.weight,
         }
     }
 }
@@ -72,6 +72,10 @@ impl From<BackendConf> for Backend {
 pub fn setup_backend_router(
     client: Arc<dyn ClientHttp<Body>>,
     backends_conf: Vec<BackendConf>,
+    check_interval: Duration,
+    check_timeout: Duration,
+    metrics_health_checker: health_check::Metrics,
+    metrics_distributor: distributor::Metrics,
 ) -> LBBackendRouter {
     let mut backends = vec![];
     for b in backends_conf {
@@ -82,43 +86,66 @@ pub fn setup_backend_router(
     BackendRouter::new(
         &backends,
         Arc::new(RequestExecutor::new(client.clone())),
-        Arc::new(BackendHealthChecker::new(client)),
+        Arc::new(BackendHealthChecker::new(client, check_timeout)),
         ic_bn_lib::utils::distributor::Strategy::WeightedRoundRobin,
-        Duration::from_secs(1),
+        check_interval,
+        metrics_health_checker,
+        metrics_distributor,
     )
 }
 
 /// Manages backends configuration
-#[derive(Debug, new)]
+#[derive(Debug)]
 pub struct BackendManager {
     client: Arc<dyn ClientHttp<Body>>,
     config_path: PathBuf,
     backend_router: Arc<ArcSwapOption<LBBackendRouter>>,
-    #[new(default)]
+    check_interval: Duration,
+    check_timeout: Duration,
     backends: Mutex<Vec<BackendConf>>,
+    metrics_distributor: distributor::Metrics,
+    metrics_health_checker: health_check::Metrics,
 }
 
 impl BackendManager {
+    /// Create a new BackendManager
+    pub fn new(
+        client: Arc<dyn ClientHttp<Body>>,
+        config_path: PathBuf,
+        backend_router: Arc<ArcSwapOption<LBBackendRouter>>,
+        check_interval: Duration,
+        check_timeout: Duration,
+        registry: &Registry,
+    ) -> Self {
+        Self {
+            client,
+            config_path,
+            backend_router,
+            check_interval,
+            check_timeout,
+            backends: Mutex::new(vec![]),
+            metrics_distributor: distributor::Metrics::new(registry),
+            metrics_health_checker: health_check::Metrics::new(registry),
+        }
+    }
+
     /// Waits until all nodes transition from Unknown health state
     async fn wait_healthchecks(backend_router: &LBBackendRouter) {
         let mut rx = backend_router.subscribe();
         while rx.changed().await.is_ok() {
             let h = rx.borrow_and_update().clone();
             let done = h.iter().all(|x| x.1 != TargetState::Unknown);
-            let states = h.iter().map(|x| x.1).collect::<Vec<_>>();
 
             if done {
+                let states = h.iter().map(|x| x.1).collect::<Vec<_>>();
                 warn!("All backends have known health state: {states:?}");
                 return;
             }
         }
     }
 
-    /// Applies the config from locally stored backends
-    pub async fn apply(&self) {
-        // Keep the backends locked to ensure that we don't reload concurrently
-        let backends = self.backends.lock().await;
-
+    /// Applies the config
+    pub async fn apply(&self, backends: MutexGuard<'_, Vec<BackendConf>>) {
         // Filter out disabled backends
         let backends_enabled = backends
             .clone()
@@ -127,7 +154,14 @@ impl BackendManager {
             .collect::<Vec<_>>();
 
         // Prepare a new BackendRouter
-        let backend_router = setup_backend_router(self.client.clone(), backends_enabled.clone());
+        let backend_router = setup_backend_router(
+            self.client.clone(),
+            backends_enabled.clone(),
+            self.check_interval,
+            self.check_timeout,
+            self.metrics_health_checker.clone(),
+            self.metrics_distributor.clone(),
+        );
 
         // If there are any enabled backends -  wait until all of them have known health status
         if !backends_enabled.is_empty() {
@@ -152,15 +186,17 @@ impl BackendManager {
     /// Loads the backends from the config file
     pub async fn load_config(&self) -> Result<(), Error> {
         // Load
-        let backends = fs::read(&self.config_path)
+        let cfg = fs::read(&self.config_path)
             .await
             .context("unable to read backends config")?;
 
-        let backends: Vec<BackendConf> =
-            serde_yaml_ng::from_slice(&backends).context("unable to parse backends config")?;
+        let backends_new: Vec<BackendConf> =
+            serde_yaml_ng::from_slice(&cfg).context("unable to parse backends config")?;
 
-        *self.backends.lock().await = backends;
-        self.apply().await;
+        let mut backends = self.backends.lock().await;
+        *backends = backends_new;
+
+        self.apply(backends).await;
 
         warn!("Config file loaded");
         Ok(())
@@ -181,17 +217,19 @@ impl BackendManager {
 
     /// Enables or disables the given backend
     pub async fn set_backend_state(&self, name: String, enabled: bool) -> Result<(), Error> {
-        // Keep the backends locked to ensure that we don't reload concurrently
+        // Keep the backends locked to ensure that we don't update them concurrently
         let mut backends = self.backends.lock().await;
 
+        // Find the backend & set the status
         let backend = backends
             .iter_mut()
             .find(|x| x.name == name)
             .ok_or_else(|| anyhow!("Backend not found: {name}"))?;
         backend.enabled = enabled;
-        drop(backends);
 
-        self.apply().await;
+        // Apply the new config
+        self.apply(backends).await;
+
         Ok(())
     }
 }
@@ -226,6 +264,7 @@ impl Run for BackendManager {
 #[derive(Debug, new)]
 pub struct BackendHealthChecker {
     client: Arc<dyn ClientHttp<Body>>,
+    timeout: Duration,
 }
 
 #[async_trait]
@@ -236,7 +275,7 @@ impl ChecksTarget<Arc<Backend>> for BackendHealthChecker {
             .body(Body::empty())
             .unwrap();
 
-        let Ok(res) = self.client.execute(req).await else {
+        let Ok(Ok(res)) = timeout(self.timeout, self.client.execute(req)).await else {
             return TargetState::Degraded;
         };
 
@@ -281,6 +320,14 @@ impl ExecutesRequest<Arc<Backend>> for RequestExecutor {
 
         *req.uri_mut() = uri;
 
-        proxy_http(req, &self.client).await
+        // Override version to HTTP/1.1, otherwise Hyper would fail to send HTTP/2 requests over HTTP/1.1 backend links.
+        // Sending HTTP/1.1 over HTTP/2 is fine.
+        *req.version_mut() = Version::HTTP_11;
+
+        proxy_http(req, &self.client).await.map(|mut x| {
+            // Insert the backend into response for observability
+            x.extensions_mut().insert(backend.clone());
+            x
+        })
     }
 }

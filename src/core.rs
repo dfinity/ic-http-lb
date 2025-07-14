@@ -11,16 +11,24 @@ use ic_bn_lib::{
     rustls,
     tasks::TaskManager,
     tls::{prepare_client_config, verify::NoopServerCertVerifier},
+    vector::client::Vector,
 };
 use prometheus::Registry;
-use tokio::signal::ctrl_c;
+use tokio::{
+    select,
+    signal::{
+        ctrl_c,
+        unix::{SignalKind, signal},
+    },
+};
 use tracing::warn;
 
 use crate::{
-    api::setup_api_axum_router, backend::BackendManager, cli::Cli, routing::setup_axum_router, tls,
+    api::setup_api_axum_router, backend::BackendManager, cli::Cli, metrics,
+    routing::setup_axum_router, tls,
 };
 
-pub const SERVICE_NAME: &str = "ic-http-lb";
+pub const SERVICE_NAME: &str = "ic_http_lb";
 pub const AUTHOR_NAME: &str = "Boundary Node Team <boundary-nodes@dfinity.org>";
 
 // Store env/hostname in statics so that we don't have to clone them
@@ -32,7 +40,7 @@ pub async fn main(cli: &Cli) -> Result<(), Error> {
     HOSTNAME.set(cli.misc.hostname.clone()).unwrap();
 
     let mut tasks = TaskManager::new();
-    let registry = Registry::new_custom(Some(SERVICE_NAME.into()), None)
+    let registry = Registry::new_custom(Some(SERVICE_NAME.to_string()), None)
         .context("unable to create Prometheus registry")?;
 
     // Create HTTP client to talk to the backends
@@ -57,15 +65,21 @@ pub async fn main(cli: &Cli) -> Result<(), Error> {
             .context("unable to setup HTTP client")?,
     );
 
-    let http_client = Arc::new(
-        HyperClientLeastLoaded::new(
-            http_client_opts,
-            resolver,
-            cli.network.network_http_client_count as usize,
-            None,
-        )
-        .context("unable to build HTTP client")?,
-    );
+    let http_client = Arc::new(HyperClientLeastLoaded::new(
+        http_client_opts,
+        resolver,
+        cli.network.network_http_client_count as usize,
+        Some(&registry),
+    ));
+
+    // Setup Vector
+    let vector = cli.log.vector.log_vector_url.as_ref().map(|_| {
+        Arc::new(Vector::new(
+            &cli.log.vector,
+            http_client_reqwest.clone(),
+            &registry,
+        ))
+    });
 
     // Setup backend routing
     let backend_router = Arc::new(ArcSwapOption::empty());
@@ -73,8 +87,12 @@ pub async fn main(cli: &Cli) -> Result<(), Error> {
         http_client.clone(),
         cli.backends.backends_config.clone(),
         backend_router.clone(),
+        cli.health.health_check_interval,
+        cli.health.health_check_timeout,
+        &registry,
     ));
 
+    // Setup API router if configured
     let axum_router_api = if cli.api.api_hostname.is_some() || cli.api.api_listen.is_some() {
         Some(
             setup_api_axum_router(cli, backend_manager.clone())
@@ -84,8 +102,9 @@ pub async fn main(cli: &Cli) -> Result<(), Error> {
         None
     };
 
-    let axum_router = setup_axum_router(cli, axum_router_api.clone(), backend_router)
-        .context("unable to setup Axum Router")?;
+    let axum_router =
+        setup_axum_router(cli, axum_router_api.clone(), backend_router, vector.clone())
+            .context("unable to setup Axum Router")?;
 
     // HTTP server metrics
     let http_metrics = bnhttp::server::Metrics::new(&registry);
@@ -105,6 +124,7 @@ pub async fn main(cli: &Cli) -> Result<(), Error> {
             .build()
             .context("unable to build HTTP server")?,
     );
+    tasks.add("server_http", server_http);
 
     // Start API server if configured
     if let (Some(listen), Some(router)) = (cli.api.api_listen, axum_router_api) {
@@ -118,6 +138,22 @@ pub async fn main(cli: &Cli) -> Result<(), Error> {
         );
 
         tasks.add("server_api", server_api);
+    }
+
+    // Start metrics server if configures
+    if let Some(addr) = cli.listen.listen_metrics {
+        let router = metrics::setup(&registry, &mut tasks);
+
+        let srv = Arc::new(
+            bnhttp::ServerBuilder::new(router)
+                .listen_tcp(addr)
+                .with_options((&cli.http_server).into())
+                .with_metrics(http_metrics.clone())
+                .build()
+                .unwrap(),
+        );
+
+        tasks.add("metrics_server", srv);
     }
 
     // Create HTTPS server
@@ -145,19 +181,26 @@ pub async fn main(cli: &Cli) -> Result<(), Error> {
         .load_config()
         .await
         .context("unable to load backends config")?;
+    tasks.add("backend_manager", backend_manager);
 
     // Run background tasks
-    tasks.add("backend_manager", backend_manager);
-    tasks.add("server_http", server_http);
-
     tasks.start();
 
     // Wait for the shutdown
     warn!("Started");
-    ctrl_c().await.unwrap();
+    let mut sig = signal(SignalKind::terminate()).context("unable to listen for SIGTERM")?;
+    select! {
+        _ = sig.recv() => {}
+        _ = ctrl_c() => {}
+    }
 
     warn!("Shutdown signal received");
     tasks.stop().await;
+
+    // Vector should stop last to ensure that all requests are finished & flushed
+    if let Some(v) = vector {
+        v.stop().await;
+    }
 
     warn!("Shutdown complete");
     Ok(())

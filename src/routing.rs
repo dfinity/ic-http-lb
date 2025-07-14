@@ -3,22 +3,27 @@ use std::sync::Arc;
 use anyhow::Error;
 use arc_swap::ArcSwapOption;
 use axum::{
-    Extension, Router,
+    Router,
     extract::{Request, State},
     handler::Handler,
+    middleware::{from_fn, from_fn_with_state},
     response::{IntoResponse, Response},
 };
 use axum_extra::extract::Host;
 use bytes::Bytes;
 use derive_new::new;
 use http::{HeaderValue, StatusCode};
-use ic_bn_lib::http::{
-    ConnInfo, extract_host,
-    headers::{X_FORWARDED_HOST, X_REAL_IP},
+use ic_bn_lib::{
+    http::{extract_host, headers::X_FORWARDED_HOST},
+    vector::client::Vector,
 };
 use tower::ServiceExt;
 
-use crate::{backend::LBBackendRouter, cli::Cli};
+use crate::{
+    backend::LBBackendRouter,
+    cli::Cli,
+    middleware::{self, metrics::MetricsState},
+};
 
 #[derive(Debug, new)]
 pub struct HandlerState {
@@ -27,7 +32,6 @@ pub struct HandlerState {
 
 pub async fn handler(
     State(state): State<Arc<HandlerState>>,
-    Extension(conn_info): Extension<Arc<ConnInfo>>,
     Host(host): Host,
     mut request: Request,
 ) -> Response {
@@ -38,12 +42,6 @@ pub async fn handler(
     request.headers_mut().insert(
         X_FORWARDED_HOST,
         HeaderValue::from_maybe_shared(Bytes::from(host)).unwrap(),
-    );
-
-    request.headers_mut().insert(
-        X_REAL_IP,
-        HeaderValue::from_maybe_shared(Bytes::from(conn_info.remote_addr.ip().to_string()))
-            .unwrap(),
     );
 
     let resp = backend_router.execute(request).await;
@@ -57,11 +55,11 @@ pub fn setup_axum_router(
     cli: &Cli,
     router_api: Option<Router>,
     backend_router: Arc<ArcSwapOption<LBBackendRouter>>,
+    vector: Option<Arc<Vector>>,
 ) -> Result<Router, Error> {
     let state = Arc::new(HandlerState::new(backend_router));
-
-    let state_clone = state.clone();
     let api_hostname = cli.api.api_hostname.clone().map(|x| x.to_string());
+    let metrics_state = Arc::new(MetricsState::new(vector, cli.log.log_requests));
 
     Ok(Router::new()
         .fallback(|Host(host): Host, request: Request| async move {
@@ -73,7 +71,11 @@ pub fn setup_axum_router(
                 }
             }
 
-            Ok(handler.call(request, state_clone).await)
+            Ok(handler.call(request, state).await)
         })
-        .with_state(state))
+        .layer(from_fn(middleware::request_id::middleware))
+        .layer(from_fn_with_state(
+            metrics_state,
+            middleware::metrics::middleware,
+        )))
 }

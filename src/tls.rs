@@ -2,14 +2,16 @@ use std::sync::Arc;
 
 use anyhow::{Error, bail};
 use ic_bn_lib::{
-    http::Client,
+    http::{ALPN_ACME, Client},
     rustls::{
-        server::ServerConfig,
+        server::{ResolvesServerCert, ServerConfig},
         version::{TLS12, TLS13},
     },
     tasks::TaskManager,
     tls::{
-        self, prepare_server_config,
+        self,
+        acme::alpn::{AcmeAlpn, Opts},
+        prepare_server_config,
         providers::{self, Aggregator, Issuer, ProvidesCertificates, issuer, storage},
         resolver,
     },
@@ -68,15 +70,35 @@ pub async fn setup(
         cli.cert.cert_provider_poll_interval,
     );
 
+    // Setup ACME ALPN for API endpoint if configured
+    let api_acme_resolver: Option<Arc<dyn ResolvesServerCert>> = if cli.api.api_acme {
+        let acme_alpn = Arc::new(AcmeAlpn::new(Opts {
+            acme_url: cli.api.api_acme_url.clone(),
+            domains: vec![cli.api.api_hostname.clone().unwrap().to_string()],
+            contact: "mailto:boundary-nodes@dfinity.org".to_string(),
+            cache_path: cli.api.api_acme_cache.clone().unwrap(),
+        }));
+        tasks.add("acme_alpn", acme_alpn.clone());
+
+        Some(acme_alpn)
+    } else {
+        None
+    };
+
     // Set up certificate resolver
     let certificate_resolver = Arc::new(resolver::AggregatingResolver::new(
-        None,
+        api_acme_resolver,
         vec![cert_storage],
         resolver::Metrics::new(registry),
     ));
 
     let mut tls_opts: tls::Options = (&cli.http_server).into();
     tls_opts.tls_versions = vec![&TLS13, &TLS12];
+
+    // To perform TLS-ALPN-01 validation we need to add ACME ALPN to the list
+    if cli.api.api_acme {
+        tls_opts.additional_alpn = vec![ALPN_ACME.to_vec()];
+    }
 
     // Generate Rustls config
     let config = prepare_server_config(tls_opts, certificate_resolver, registry);

@@ -10,6 +10,7 @@ use axum::{
 };
 use derive_new::new;
 use http::{StatusCode, header::AUTHORIZATION};
+use tracing::warn;
 
 use crate::{backend::BackendManager, cli::Cli};
 
@@ -53,11 +54,15 @@ pub async fn backend_handler(
     Path((backend, action)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, impl IntoResponse> {
     match action.as_str() {
-        "enable" | "disable" => state
-            .backend_manager
-            .set_backend_state(backend, action == "enable")
-            .await
-            .map_err(|e| (StatusCode::BAD_REQUEST, format!("Error: {e:#}")))?,
+        "enable" | "disable" => {
+            warn!("API request: {action} backend {backend}");
+
+            state
+                .backend_manager
+                .set_backend_state(backend, action == "enable")
+                .await
+                .map_err(|e| (StatusCode::BAD_REQUEST, format!("Error: {e:#}")))?
+        }
 
         _ => return Err((StatusCode::BAD_REQUEST, format!("Unknown action: {action}"))),
     };
@@ -70,13 +75,19 @@ pub async fn config_handler(
     Path(action): Path<String>,
 ) -> Result<impl IntoResponse, impl IntoResponse> {
     match action.as_str() {
-        "reload" => state
-            .backend_manager
-            .load_config()
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {e:#}")))?,
+        "reload" => {
+            warn!("API request: config reload");
+
+            state
+                .backend_manager
+                .load_config()
+                .await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {e:#}")))?
+        }
 
         "dump" => {
+            warn!("API request: config dump");
+
             let cfg = state.backend_manager.get_config().await;
             let cfg = serde_json::to_string_pretty(&cfg)
                 .unwrap_or_else(|e| format!("unable to encode to JSON: {e:#}"));
@@ -121,10 +132,8 @@ mod test {
     use axum::body::Body;
     use clap::Parser;
     use http::{Request, Uri};
-    use ic_bn_lib::{
-        http::{HyperClient, client::Options, dns::Resolver},
-        hval,
-    };
+    use ic_bn_lib::{http::HyperClient, hval};
+    use prometheus::Registry;
     use tower::ServiceExt;
 
     use super::*;
@@ -134,26 +143,42 @@ mod test {
         let args: Vec<&str> = vec!["", "--api-token", "deadbeef", "--backends-config", "foo"];
         let cli = Cli::parse_from(args);
 
-        let client = Arc::new(HyperClient::new(Options::default(), Resolver::default()).unwrap());
-        let bm = BackendManager::new(client, PathBuf::new(), Arc::new(ArcSwapOption::empty()));
+        let client = Arc::new(HyperClient::default());
+        let bm = BackendManager::new(
+            client,
+            PathBuf::new(),
+            Arc::new(ArcSwapOption::empty()),
+            cli.health.health_check_interval,
+            cli.health.health_check_timeout,
+            &Registry::new(),
+        );
 
         let router = setup_api_axum_router(&cli, Arc::new(bm)).unwrap();
 
         // Bad header
-        let mut req = Request::new(Body::empty());
+        let mut req = Request::builder()
+            .uri("/config/dump")
+            .body(Body::empty())
+            .unwrap();
         req.headers_mut().insert(AUTHORIZATION, hval!("beef"));
 
         let resp = router.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-        let mut req = Request::new(Body::empty());
+        let mut req = Request::builder()
+            .uri("/config/dump")
+            .body(Body::empty())
+            .unwrap();
         req.headers_mut().insert(AUTHORIZATION, hval!("Bearer "));
 
         let resp = router.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
         // Bad token
-        let mut req = Request::new(Body::empty());
+        let mut req = Request::builder()
+            .uri("/config/dump")
+            .body(Body::empty())
+            .unwrap();
         req.headers_mut()
             .insert(AUTHORIZATION, hval!("Bearer foobar"));
 
@@ -161,7 +186,10 @@ mod test {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
         // Good token
-        let mut req = Request::new(Body::empty());
+        let mut req = Request::builder()
+            .uri("/config/dump")
+            .body(Body::empty())
+            .unwrap();
         *req.uri_mut() = Uri::from_static("http://foo/config/dump");
         req.headers_mut()
             .insert(AUTHORIZATION, hval!("Bearer deadbeef"));
