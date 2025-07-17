@@ -8,6 +8,7 @@ use axum::{
     handler::Handler,
     middleware::{from_fn, from_fn_with_state},
     response::{IntoResponse, Response},
+    routing::get,
 };
 use axum_extra::extract::Host;
 use bytes::Bytes;
@@ -51,6 +52,7 @@ pub async fn handler(
     }
 }
 
+/// Creates top-level Axum Router
 pub fn setup_axum_router(
     cli: &Cli,
     router_api: Option<Router>,
@@ -62,6 +64,7 @@ pub fn setup_axum_router(
     let metrics_state = Arc::new(MetricsState::new(vector, cli.log.log_requests));
 
     Ok(Router::new()
+        .route("/foobar_test_route", get(async || "foobar"))
         .fallback(|Host(host): Host, request: Request| async move {
             // See if we have API enabled
             if let Some(v) = router_api {

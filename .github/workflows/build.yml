@@ -1,0 +1,109 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  CARGO_TERM_COLOR: never
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+permissions:
+  contents: write
+  packages: write
+  attestations: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install repro-env
+        run: |
+          wget 'https://github.com/kpcyrd/repro-env/releases/download/v0.4.3/repro-env'
+          echo '2a00b21ac5e990e0c6a0ccbf3b91e34a073660d1f4553b5f3cda2b09cc4d4d8a  repro-env' | sha256sum -c -
+          sudo install -m755 repro-env -t /usr/bin
+
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get -y install protobuf-compiler podman
+
+      - name: Build
+        run: repro-env build -- cargo build --release --target x86_64-unknown-linux-musl
+
+      - name: Generate SHA checksum
+        run: shasum target/x86_64-unknown-linux-musl/release/ic-http-lb > ic-http-lb.shasum
+
+      - name: Remove build files
+        run: rm -rf target
+
+      - name: Build again
+        run: repro-env build -- cargo build --release --target x86_64-unknown-linux-musl
+
+      - name: Check SHA checksum
+        run: shasum -c ic-http-lb.shasum
+
+      - name: Strip
+        run: /usr/bin/strip target/x86_64-unknown-linux-musl/release/ic-http-lb
+
+      - name: Create package root
+        run: |
+          mkdir -p .debpkg/usr/sbin
+          mkdir -p .debpkg/etc/systemd/system
+          mkdir -p .debpkg/etc/default
+          mkdir -p .debpkg/DEBIAN
+
+          cp target/x86_64-unknown-linux-musl/release/ic-http-lb .debpkg/usr/sbin
+          cp deploy/ic-http-lb.service .debpkg/etc/systemd/system
+          cp deploy/ic-http-lb.env .debpkg/etc/default/ic-http-lb
+
+          chmod -R g-s .debpkg
+
+      - uses: jiro4989/build-deb-action@1bd8ed1458d3dc331f62bf50468cce9b610fd0af
+        with:
+          package: ic-http-lb
+          package_root: .debpkg
+          maintainer: "DFINITY Boundary Nodes Team"
+          version: ${{ github.ref }}
+          arch: amd64
+          desc: "IC-HTTP-LB Service"
+          homepage: "https://github.com/dfinity/ic-http-lb"
+
+      - uses: ncipollo/release-action@2c591bcc8ecdcd2db72b97d6147f871fcd833ba5
+        with:
+          makeLatest: true
+          artifacts: "target/x86_64-unknown-linux-musl/release/ic-http-lb,*.deb"
+          body: "IC-HTTP-LB release"
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for Docker
+        id: docker_meta
+        uses: docker/metadata-action@902fa8ec7d6ecbf8d84d538b9b233a880e428804
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+
+      - name: Build and push Docker image
+        id: docker_push
+        uses: docker/build-push-action@1dc73863535b631f98b2378be8619f83b136f4a0
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.docker_meta.outputs.tags }}
+          labels: ${{ steps.docker_meta.outputs.labels }}
+
+      - name: Generate artifact attestation
+        uses: actions/attest-build-provenance@db473fddc028af60658334401dc6fa3ffd8669fd
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME}}
+          subject-digest: ${{ steps.docker_push.outputs.digest }}
+          push-to-registry: true

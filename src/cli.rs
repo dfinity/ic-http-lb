@@ -73,7 +73,7 @@ pub struct Listen {
 #[derive(Args)]
 pub struct Network {
     /// Number of HTTP clients to create to spread the load over
-    #[clap(env, long, default_value = "8", value_parser = clap::value_parser!(u16).range(1..))]
+    #[clap(env, long, default_value = "16", value_parser = clap::value_parser!(u16).range(1..))]
     pub network_http_client_count: u16,
 
     /// Bypass verification of TLS certificates for all outgoing requests.
@@ -131,6 +131,11 @@ pub struct Cert {
     /// Each file should be PEM-encoded concatenated certificate chain with a private key.
     #[clap(env, long, value_delimiter = ',')]
     pub cert_provider_file: Vec<PathBuf>,
+
+    /// Read certificates from given directories
+    /// Each certificate should be a pair .pem + .key files with the same base name.
+    #[clap(env, long, value_delimiter = ',')]
+    pub cert_provider_dir: Vec<PathBuf>,
 
     /// Request certificates from the 'certificate-issuer' instances reachable over given URLs.
     #[clap(env, long, value_delimiter = ',')]
@@ -206,7 +211,7 @@ mod test {
 
     #[test]
     fn test_cli() {
-        let args: Vec<&str> = vec![];
+        let args: Vec<&str> = vec!["", "--backends-config", "foo"];
         Cli::parse_from(args);
     }
 }

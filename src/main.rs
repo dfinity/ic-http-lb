@@ -22,8 +22,6 @@ fn main() -> Result<(), Error> {
     let cli = Cli::parse();
     setup_logging(&cli.log).context("unable to setup logging")?;
 
-    warn!("Env: {}, Hostname: {}", cli.misc.env, cli.misc.hostname);
-
     let threads = if let Some(v) = cli.misc.threads {
         v
     } else {
@@ -32,12 +30,17 @@ fn main() -> Result<(), Error> {
             .get()
     };
 
+    warn!(
+        "Env: {}, Hostname: {}, using {threads} threads",
+        cli.misc.env, cli.misc.hostname
+    );
+
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(threads)
         .build()?
         .block_on(core::main(&cli))
-        .context("failure")?;
+        .context("Startup failed")?;
 
     Ok(())
 }

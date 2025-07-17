@@ -58,6 +58,11 @@ pub async fn setup(
         cert_providers.push(Arc::new(providers::File::new(v.clone())));
     }
 
+    // Create Dir providers
+    for v in &cli.cert.cert_provider_dir {
+        cert_providers.push(Arc::new(providers::Dir::new(v.clone())));
+    }
+
     if cert_providers.is_empty() {
         bail!("No certificate providers specified - HTTPS cannot be used");
     }

@@ -316,12 +316,12 @@ impl ExecutesRequest<Arc<Backend>> for RequestExecutor {
                     .as_str(),
             )
             .build()
-            .unwrap();
+            .context("invalid URL")?;
 
         *req.uri_mut() = uri;
 
         // Override version to HTTP/1.1, otherwise Hyper would fail to send HTTP/2 requests over HTTP/1.1 backend links.
-        // Sending HTTP/1.1 over HTTP/2 is fine.
+        // Sending HTTP/1.1 requests over HTTP/2 connections is fine.
         *req.version_mut() = Version::HTTP_11;
 
         proxy_http(req, &self.client).await.map(|mut x| {

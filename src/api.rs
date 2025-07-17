@@ -67,7 +67,7 @@ pub async fn backend_handler(
         _ => return Err((StatusCode::BAD_REQUEST, format!("Unknown action: {action}"))),
     };
 
-    Ok((StatusCode::OK, "OK".to_string()))
+    Ok((StatusCode::OK, "Ok\n".to_string()))
 }
 
 pub async fn config_handler(
@@ -85,8 +85,8 @@ pub async fn config_handler(
                 .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {e:#}")))?
         }
 
-        "dump" => {
-            warn!("API request: config dump");
+        "get" => {
+            warn!("API request: config get");
 
             let cfg = state.backend_manager.get_config().await;
             let cfg = serde_json::to_string_pretty(&cfg)
@@ -98,7 +98,7 @@ pub async fn config_handler(
         _ => return Err((StatusCode::BAD_REQUEST, format!("Unknown action: {action}"))),
     };
 
-    Ok((StatusCode::OK, "Ok".to_string()))
+    Ok((StatusCode::OK, "Ok\n".to_string()))
 }
 
 pub fn setup_api_axum_router(
@@ -157,7 +157,7 @@ mod test {
 
         // Bad header
         let mut req = Request::builder()
-            .uri("/config/dump")
+            .uri("/config/get")
             .body(Body::empty())
             .unwrap();
         req.headers_mut().insert(AUTHORIZATION, hval!("beef"));
@@ -165,8 +165,8 @@ mod test {
         let resp = router.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-        let mut req = Request::builder()
-            .uri("/config/dump")
+        let mut req: Request<Body> = Request::builder()
+            .uri("/config/get")
             .body(Body::empty())
             .unwrap();
         req.headers_mut().insert(AUTHORIZATION, hval!("Bearer "));
@@ -176,7 +176,7 @@ mod test {
 
         // Bad token
         let mut req = Request::builder()
-            .uri("/config/dump")
+            .uri("/config/get")
             .body(Body::empty())
             .unwrap();
         req.headers_mut()
@@ -187,10 +187,10 @@ mod test {
 
         // Good token
         let mut req = Request::builder()
-            .uri("/config/dump")
+            .uri("/config/get")
             .body(Body::empty())
             .unwrap();
-        *req.uri_mut() = Uri::from_static("http://foo/config/dump");
+        *req.uri_mut() = Uri::from_static("http://foo/config/get");
         req.headers_mut()
             .insert(AUTHORIZATION, hval!("Bearer deadbeef"));
 

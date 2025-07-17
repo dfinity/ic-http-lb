@@ -1,0 +1,14 @@
+[Unit]
+Description=IC-HTTP-LB
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=root
+Group=root
+Restart=always
+EnvironmentFile=-/etc/default/ic-http-lb
+ExecStart=/usr/sbin/ic-http-lb
+
+[Install]
+WantedBy=multi-user.target
