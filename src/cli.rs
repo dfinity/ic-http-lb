@@ -6,7 +6,6 @@ use humantime::parse_duration;
 use ic_bn_lib::{
     http::{self, dns},
     tls::acme::AcmeUrl,
-    utils::distributor::Strategy,
     vector::cli::Vector,
 };
 use url::Url;
@@ -17,6 +16,9 @@ use crate::core::{AUTHOR_NAME, SERVICE_NAME};
 #[clap(name = SERVICE_NAME)]
 #[clap(author = AUTHOR_NAME)]
 pub struct Cli {
+    #[command(flatten, next_help_heading = "Config")]
+    pub config: Config,
+
     #[command(flatten, next_help_heading = "Listen")]
     pub listen: Listen,
 
@@ -25,9 +27,6 @@ pub struct Cli {
 
     #[command(flatten, next_help_heading = "HTTP Client")]
     pub http_client: http::client::cli::HttpClient,
-
-    #[command(flatten, next_help_heading = "Backends")]
-    pub backends: Backends,
 
     #[command(flatten, next_help_heading = "Network")]
     pub network: Network,
@@ -157,15 +156,10 @@ pub struct Cert {
 }
 
 #[derive(Args)]
-pub struct Backends {
+pub struct Config {
     /// Path to the YAML file with backend configuration
     #[clap(env, long)]
-    pub backends_config: PathBuf,
-
-    /// Strategy to use when choosing the next backend.
-    /// Can be "wrr" for Weighted Round Robin or "lor" for Least Outstanding Requests.
-    #[clap(env, long, default_value = "wrr")]
-    pub backends_strategy: Strategy,
+    pub config_path: PathBuf,
 }
 
 #[derive(Args)]

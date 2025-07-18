@@ -85,7 +85,7 @@ pub async fn main(cli: &Cli) -> Result<(), Error> {
     let backend_router = Arc::new(ArcSwapOption::empty());
     let backend_manager = Arc::new(BackendManager::new(
         http_client.clone(),
-        cli.backends.backends_config.clone(),
+        cli.config.config_path.clone(),
         backend_router.clone(),
         cli.health.health_check_interval,
         cli.health.health_check_timeout,

@@ -50,15 +50,23 @@ To install and set up `ic-http-lb`, follow the steps below.
 To run a minimal ic-http-lb instance, use the following configuration in `/etc/default/ic-http-lb`:
 
 ```
-BACKENDS_CONFIG="/etc/ic-http-lb/backends.yaml"
+CONFIG_PATH="/etc/ic-http-lb/config.yaml"
 ```
 
-`backends.yaml` example:
+`config.yaml` example:
 ```
-- name: backend1.domain.com
-  url: https://backend1.domain.com
-  weight: 1
-  enabled: true
+strategy: wrr
+
+backends:
+  - name: host1
+    url: http://host1
+    weight: 1
+    enabled: true
+
+  - name: host2
+    url: http://host2
+    weight: 2
+    enabled: true
 ```
 
 ### Options

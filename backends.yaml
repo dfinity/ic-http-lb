@@ -1,9 +1,0 @@
-- name: host1
-  url: http://127.0.0.1:9001
-  weight: 1
-  enabled: true
-
-- name: host2
-  url: http://127.0.0.1:9002
-  weight: 2
-  enabled: true

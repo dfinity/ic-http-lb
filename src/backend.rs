@@ -1,6 +1,6 @@
 use std::{fmt::Display, path::PathBuf, sync::Arc, time::Duration};
 
-use anyhow::{Context, Error, anyhow};
+use anyhow::{Context, Error, anyhow, bail};
 use arc_swap::ArcSwapOption;
 use async_trait::async_trait;
 use axum::{body::Body, extract::Request, response::Response};
@@ -11,10 +11,11 @@ use ic_bn_lib::{
     tasks::Run,
     utils::{
         backend_router::BackendRouter,
-        distributor::{self, ExecutesRequest},
+        distributor::{self, ExecutesRequest, Strategy},
         health_check::{self, ChecksTarget, TargetState},
     },
 };
+use itertools::Itertools;
 use prometheus::Registry;
 use serde::{Deserialize, Serialize};
 use tokio::{
@@ -28,6 +29,21 @@ use tracing::warn;
 use url::Url;
 
 pub type LBBackendRouter = BackendRouter<Arc<Backend>, Request, Response, ic_bn_lib::http::Error>;
+
+#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
+pub struct Config {
+    strategy: Strategy,
+    backends: Vec<BackendConf>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            strategy: Strategy::LeastOutstandingRequests,
+            backends: vec![],
+        }
+    }
+}
 
 /// Backend as represented in the config file
 #[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
@@ -71,14 +87,14 @@ impl From<BackendConf> for Backend {
 
 pub fn setup_backend_router(
     client: Arc<dyn ClientHttp<Body>>,
-    backends_conf: Vec<BackendConf>,
+    config: Config,
     check_interval: Duration,
     check_timeout: Duration,
     metrics_health_checker: health_check::Metrics,
     metrics_distributor: distributor::Metrics,
 ) -> LBBackendRouter {
     let mut backends = vec![];
-    for b in backends_conf {
+    for b in config.backends {
         let weight = b.weight;
         backends.push((Arc::new(b.into()), weight));
     }
@@ -87,7 +103,7 @@ pub fn setup_backend_router(
         &backends,
         Arc::new(RequestExecutor::new(client.clone())),
         Arc::new(BackendHealthChecker::new(client, check_timeout)),
-        ic_bn_lib::utils::distributor::Strategy::WeightedRoundRobin,
+        config.strategy,
         check_interval,
         metrics_health_checker,
         metrics_distributor,
@@ -102,7 +118,7 @@ pub struct BackendManager {
     backend_router: Arc<ArcSwapOption<LBBackendRouter>>,
     check_interval: Duration,
     check_timeout: Duration,
-    backends: Mutex<Vec<BackendConf>>,
+    config: Mutex<Config>,
     metrics_distributor: distributor::Metrics,
     metrics_health_checker: health_check::Metrics,
 }
@@ -123,7 +139,7 @@ impl BackendManager {
             backend_router,
             check_interval,
             check_timeout,
-            backends: Mutex::new(vec![]),
+            config: Mutex::new(Config::default()),
             metrics_distributor: distributor::Metrics::new(registry),
             metrics_health_checker: health_check::Metrics::new(registry),
         }
@@ -145,18 +161,24 @@ impl BackendManager {
     }
 
     /// Applies the config
-    pub async fn apply(&self, backends: MutexGuard<'_, Vec<BackendConf>>) {
+    pub async fn apply(&self, config: MutexGuard<'_, Config>) {
         // Filter out disabled backends
-        let backends_enabled = backends
+        let backends_enabled = config
+            .backends
             .clone()
             .into_iter()
             .filter(|x| x.enabled)
             .collect::<Vec<_>>();
 
+        let config = Config {
+            strategy: config.strategy,
+            backends: backends_enabled.clone(),
+        };
+
         // Prepare a new BackendRouter
         let backend_router = setup_backend_router(
             self.client.clone(),
-            backends_enabled.clone(),
+            config,
             self.check_interval,
             self.check_timeout,
             self.metrics_health_checker.clone(),
@@ -190,21 +212,36 @@ impl BackendManager {
             .await
             .context("unable to read backends config")?;
 
-        let backends_new: Vec<BackendConf> =
+        let config: Config =
             serde_yaml_ng::from_slice(&cfg).context("unable to parse backends config")?;
 
-        let mut backends = self.backends.lock().await;
-        *backends = backends_new;
-
-        self.apply(backends).await;
+        self.set_config(config).await?;
 
         warn!("Config file loaded");
         Ok(())
     }
 
+    /// Replaces the current config with provided one
+    pub async fn set_config(&self, config_new: Config) -> Result<(), Error> {
+        if !config_new
+            .backends
+            .iter()
+            .map(|x| x.name.clone())
+            .all_unique()
+        {
+            bail!("Non-unique backend names");
+        }
+
+        let mut config = self.config.lock().await;
+        *config = config_new;
+        self.apply(config).await;
+
+        Ok(())
+    }
+
     /// Returns the current config
-    pub async fn get_config(&self) -> Vec<BackendConf> {
-        self.backends.lock().await.clone()
+    pub async fn get_config(&self) -> Config {
+        self.config.lock().await.clone()
     }
 
     /// Get a list of healthy nodes
@@ -218,17 +255,18 @@ impl BackendManager {
     /// Enables or disables the given backend
     pub async fn set_backend_state(&self, name: String, enabled: bool) -> Result<(), Error> {
         // Keep the backends locked to ensure that we don't update them concurrently
-        let mut backends = self.backends.lock().await;
+        let mut config = self.config.lock().await;
 
         // Find the backend & set the status
-        let backend = backends
+        let b = config
+            .backends
             .iter_mut()
             .find(|x| x.name == name)
             .ok_or_else(|| anyhow!("Backend not found: {name}"))?;
-        backend.enabled = enabled;
+        b.enabled = enabled;
 
         // Apply the new config
-        self.apply(backends).await;
+        self.apply(config).await;
 
         Ok(())
     }
