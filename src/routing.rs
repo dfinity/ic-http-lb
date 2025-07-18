@@ -18,12 +18,16 @@ use ic_bn_lib::{
     http::{extract_host, headers::X_FORWARDED_HOST},
     vector::client::Vector,
 };
+use prometheus::Registry;
 use tower::ServiceExt;
 
 use crate::{
     backend::LBBackendRouter,
     cli::Cli,
-    middleware::{self, metrics::MetricsState},
+    middleware::{
+        self,
+        metrics::{Metrics, MetricsState},
+    },
 };
 
 #[derive(Debug, new)]
@@ -58,10 +62,12 @@ pub fn setup_axum_router(
     router_api: Option<Router>,
     backend_router: Arc<ArcSwapOption<LBBackendRouter>>,
     vector: Option<Arc<Vector>>,
+    registry: &Registry,
 ) -> Result<Router, Error> {
     let state = Arc::new(HandlerState::new(backend_router));
     let api_hostname = cli.api.api_hostname.clone().map(|x| x.to_string());
-    let metrics_state = Arc::new(MetricsState::new(vector, cli.log.log_requests));
+    let metrics = Metrics::new(registry);
+    let metrics_state = Arc::new(MetricsState::new(vector, metrics, cli.log.log_requests));
 
     Ok(Router::new()
         .route("/foobar_test_route", get(async || "foobar"))

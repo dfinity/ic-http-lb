@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use axum::{
     Extension,
@@ -11,17 +14,57 @@ use bytes::Bytes;
 use derive_new::new;
 use http::HeaderValue;
 use ic_bn_lib::{
-    http::{ConnInfo, extract_authority, headers::X_REAL_IP, http_method, http_version},
+    http::{
+        ConnInfo, extract_authority, headers::X_REAL_IP, http_method, http_version, server::TlsInfo,
+    },
     vector::client::Vector,
+};
+use prometheus::{
+    HistogramVec, IntCounterVec, Registry, register_histogram_vec_with_registry,
+    register_int_counter_vec_with_registry,
 };
 use serde_json::json;
 use tracing::info;
 
 use crate::{backend::Backend, middleware::request_id::RequestId};
 
+pub const HTTP_DURATION_BUCKETS: &[f64] = &[0.05, 0.2, 1.0, 2.0];
+
+#[derive(Clone)]
+pub struct Metrics {
+    pub requests: IntCounterVec,
+    pub duration: HistogramVec,
+}
+
+impl Metrics {
+    pub fn new(registry: &Registry) -> Self {
+        const LABELS_HTTP: &[&str] = &["tls", "method", "http", "status", "backend"];
+
+        Self {
+            requests: register_int_counter_vec_with_registry!(
+                format!("http_requests"),
+                format!("Counts occurrences of requests"),
+                LABELS_HTTP,
+                registry
+            )
+            .unwrap(),
+
+            duration: register_histogram_vec_with_registry!(
+                format!("http_requests_duration_sec"),
+                format!("Records the duration of request processing in seconds"),
+                LABELS_HTTP,
+                HTTP_DURATION_BUCKETS.to_vec(),
+                registry
+            )
+            .unwrap(),
+        }
+    }
+}
+
 #[derive(new)]
 pub struct MetricsState {
     vector: Option<Arc<Vector>>,
+    metrics: Metrics,
     log_requests: bool,
 }
 
@@ -31,6 +74,7 @@ pub async fn middleware(
     mut request: Request,
     next: Next,
 ) -> Response {
+    let tls_info = request.extensions().get::<Arc<TlsInfo>>().cloned();
     let method = http_method(request.method());
     let authority = extract_authority(&request).unwrap_or_default().to_string();
     let http_version = http_version(request.version());
@@ -49,7 +93,11 @@ pub async fn middleware(
         HeaderValue::from_maybe_shared(Bytes::from(remote_addr.clone())).unwrap(),
     );
 
+    // Execute the request
+    let start = Instant::now();
     let mut response = next.run(request).await;
+    let duration = start.elapsed().as_secs_f64();
+
     let backend = response
         .extensions_mut()
         .remove::<Arc<Backend>>()
@@ -61,18 +109,43 @@ pub async fn middleware(
         .exact()
         .map(|x| x as i64)
         .unwrap_or(-1);
-
     let request_id = response
         .extensions_mut()
         .remove::<RequestId>()
         .map(|x| x.to_string())
         .unwrap_or_default();
-
     let status = response.status();
+
+    let (tls_version, tls_cipher, tls_handshake) =
+        tls_info.as_ref().map_or(("", "", Duration::ZERO), |x| {
+            (
+                x.protocol.as_str().unwrap(),
+                x.cipher.as_str().unwrap(),
+                x.handshake_dur,
+            )
+        });
+
+    let labels = &[
+        tls_version,
+        method,
+        http_version,
+        status.as_str(),
+        backend.as_str(),
+    ];
+
+    state.metrics.requests.with_label_values(labels).inc();
+    state
+        .metrics
+        .duration
+        .with_label_values(labels)
+        .observe(duration);
 
     if state.log_requests {
         info!(
             request_id,
+            tls_version,
+            tls_cipher,
+            tls_handshake = tls_handshake.as_secs_f64(),
             http_version,
             authority,
             method,
@@ -80,6 +153,7 @@ pub async fn middleware(
             query,
             remote_addr,
             status = status.as_str(),
+            duration,
             backend,
             request_size,
             response_size,
@@ -89,12 +163,16 @@ pub async fn middleware(
     if let Some(v) = &state.vector {
         let event = json! ({
             "request_id": request_id,
+            "tls_version": tls_version,
+            "tls_cipher": tls_cipher,
+            "tls_handshake": tls_handshake.as_secs_f64(),
             "http_version": http_version,
             "authority": authority,
             "method": method,
             "path": path,
             "query": query,
             "status": status.as_str(),
+            "duration": duration,
             "backend": backend,
             "remote_addr": remote_addr,
             "request_size": request_size,

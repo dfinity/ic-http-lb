@@ -609,9 +609,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.2.29"
+version = "1.2.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c1599538de2394445747c8cf7935946e3cc27e9625f889d979bfb2aaf569362"
+checksum = "deec109607ca693028562ed836a5f1c4b8bd77755c4e132fc5ce11b0b6211ae7"
 dependencies = [
  "jobserver",
  "libc",
@@ -1511,7 +1511,7 @@ dependencies = [
 [[package]]
 name = "ic-bn-lib"
 version = "0.1.0"
-source = "git+https://github.com/dfinity/ic-bn-lib?rev=00f6202f0939034c22281830736956d502a84d21#00f6202f0939034c22281830736956d502a84d21"
+source = "git+https://github.com/dfinity/ic-bn-lib?rev=df55aadf35cae38e5bc60febfc3170d448249b98#df55aadf35cae38e5bc60febfc3170d448249b98"
 dependencies = [
  "ahash",
  "anyhow",

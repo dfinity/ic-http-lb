@@ -102,9 +102,14 @@ pub async fn main(cli: &Cli) -> Result<(), Error> {
         None
     };
 
-    let axum_router =
-        setup_axum_router(cli, axum_router_api.clone(), backend_router, vector.clone())
-            .context("unable to setup Axum Router")?;
+    let axum_router = setup_axum_router(
+        cli,
+        axum_router_api.clone(),
+        backend_router,
+        vector.clone(),
+        &registry,
+    )
+    .context("unable to setup Axum Router")?;
 
     // HTTP server metrics
     let http_metrics = bnhttp::server::Metrics::new(&registry);
