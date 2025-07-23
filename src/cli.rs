@@ -205,7 +205,7 @@ mod test {
 
     #[test]
     fn test_cli() {
-        let args: Vec<&str> = vec!["", "--backends-config", "foo"];
+        let args: Vec<&str> = vec!["", "--config-path", "foo"];
         Cli::parse_from(args);
     }
 }

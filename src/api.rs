@@ -8,11 +8,15 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
+use bytes::Bytes;
 use derive_new::new;
 use http::{StatusCode, header::AUTHORIZATION};
 use tracing::warn;
 
-use crate::{backend::BackendManager, cli::Cli};
+use crate::{
+    backend::{BackendManager, Config},
+    cli::Cli,
+};
 
 #[derive(Debug, new)]
 pub struct ApiState {
@@ -73,6 +77,7 @@ pub async fn backend_handler(
 pub async fn config_handler(
     State(state): State<Arc<ApiState>>,
     Path(action): Path<String>,
+    body: Bytes,
 ) -> Result<impl IntoResponse, impl IntoResponse> {
     match action.as_str() {
         "reload" => {
@@ -93,6 +98,26 @@ pub async fn config_handler(
                 .unwrap_or_else(|e| format!("unable to encode to JSON: {e:#}"));
 
             return Ok((StatusCode::OK, cfg));
+        }
+
+        "put" => {
+            warn!("API request: config put");
+
+            let Ok(cfg): Result<Config, _> =
+                serde_json::from_slice(&body).or_else(|_| serde_yaml_ng::from_slice(&body))
+            else {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "Unable to parse config as JSON or YAML".to_string(),
+                ));
+            };
+
+            state.backend_manager.set_config(cfg).await.map_err(|e| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    format!("Unable to apply new config: {e:#}"),
+                )
+            })?
         }
 
         _ => return Err((StatusCode::BAD_REQUEST, format!("Unknown action: {action}"))),
@@ -140,7 +165,7 @@ mod test {
 
     #[tokio::test]
     async fn test_api_auth() {
-        let args: Vec<&str> = vec!["", "--api-token", "deadbeef", "--backends-config", "foo"];
+        let args: Vec<&str> = vec!["", "--api-token", "deadbeef", "--config-path", "foo"];
         let cli = Cli::parse_from(args);
 
         let client = Arc::new(HyperClient::default());
