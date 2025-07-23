@@ -6,7 +6,7 @@ use axum::{
     extract::{Path, Request, State},
     middleware::{Next, from_fn_with_state},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, put},
 };
 use bytes::Bytes;
 use derive_new::new;
@@ -74,56 +74,68 @@ pub async fn backend_handler(
     Ok((StatusCode::OK, "Ok\n".to_string()))
 }
 
-pub async fn config_handler(
+pub async fn config_reload(
     State(state): State<Arc<ApiState>>,
-    Path(action): Path<String>,
+) -> Result<impl IntoResponse, impl IntoResponse> {
+    warn!("API request: config reload");
+
+    state
+        .backend_manager
+        .load_config()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {e:#}")))?;
+
+    // Oh Rust type inference...
+    Ok::<(StatusCode, String), (StatusCode, String)>((StatusCode::OK, "Ok\n".to_string()))
+}
+
+pub async fn config_get(
+    State(state): State<Arc<ApiState>>,
+) -> Result<impl IntoResponse, impl IntoResponse> {
+    warn!("API request: config get");
+
+    let cfg = state.backend_manager.get_config().await;
+    let cfg = serde_json::to_string_pretty(&cfg).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("unable to encode to JSON: {e:#}"),
+        )
+    })?;
+
+    // Oh Rust type inference...
+    Ok::<(StatusCode, String), (StatusCode, String)>((StatusCode::OK, cfg))
+}
+
+pub async fn config_put(
+    State(state): State<Arc<ApiState>>,
     body: Bytes,
 ) -> Result<impl IntoResponse, impl IntoResponse> {
-    match action.as_str() {
-        "reload" => {
-            warn!("API request: config reload");
+    warn!("API request: config put");
 
-            state
-                .backend_manager
-                .load_config()
-                .await
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {e:#}")))?
-        }
-
-        "get" => {
-            warn!("API request: config get");
-
-            let cfg = state.backend_manager.get_config().await;
-            let cfg = serde_json::to_string_pretty(&cfg)
-                .unwrap_or_else(|e| format!("unable to encode to JSON: {e:#}"));
-
-            return Ok((StatusCode::OK, cfg));
-        }
-
-        "put" => {
-            warn!("API request: config put");
-
-            let Ok(cfg): Result<Config, _> =
-                serde_json::from_slice(&body).or_else(|_| serde_yaml_ng::from_slice(&body))
-            else {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    "Unable to parse config as JSON or YAML".to_string(),
-                ));
-            };
-
-            state.backend_manager.set_config(cfg).await.map_err(|e| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    format!("Unable to apply new config: {e:#}"),
-                )
-            })?
-        }
-
-        _ => return Err((StatusCode::BAD_REQUEST, format!("Unknown action: {action}"))),
+    let Ok(cfg): Result<Config, _> =
+        serde_json::from_slice(&body).or_else(|_| serde_yaml_ng::from_slice(&body))
+    else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Unable to parse config as JSON or YAML".to_string(),
+        ));
     };
 
-    Ok((StatusCode::OK, "Ok\n".to_string()))
+    state.backend_manager.set_config(cfg).await.map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("Unable to apply new config: {e:#}"),
+        )
+    })?;
+
+    state.backend_manager.persist_config().await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Unable to persist new config: {e:#}"),
+        )
+    })?;
+
+    Ok((StatusCode::OK, "Ok\n"))
 }
 
 pub fn setup_api_axum_router(
@@ -145,7 +157,9 @@ pub fn setup_api_axum_router(
             "/backend/{backend}/{action}",
             get(backend_handler).layer(auth.clone()),
         )
-        .route("/config/{action}", get(config_handler).layer(auth))
+        .route("/config/reload", get(config_reload).layer(auth.clone()))
+        .route("/config/get", get(config_get).layer(auth.clone()))
+        .route("/config/put", put(config_put).layer(auth))
         .with_state(state))
 }
 

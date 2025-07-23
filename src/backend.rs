@@ -244,6 +244,16 @@ impl BackendManager {
         self.config.lock().await.clone()
     }
 
+    /// Persists the current config to disk
+    pub async fn persist_config(&self) -> Result<(), Error> {
+        let cfg = self.config.lock().await.clone();
+        let yaml = serde_yaml_ng::to_string(&cfg).context("unable to serialize config to YAML")?;
+
+        fs::write(&self.config_path, &yaml)
+            .await
+            .context("unable to save config to disk")
+    }
+
     /// Get a list of healthy nodes
     pub fn get_healthy_nodes(&self) -> Arc<Vec<Arc<Backend>>> {
         self.backend_router
