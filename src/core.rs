@@ -1,7 +1,6 @@
 use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Error};
-use arc_swap::ArcSwapOption;
 use axum::Router;
 use ic_bn_lib::{
     http::{
@@ -82,11 +81,9 @@ pub async fn main(cli: &Cli) -> Result<(), Error> {
     });
 
     // Setup backend routing
-    let backend_router = Arc::new(ArcSwapOption::empty());
     let backend_manager = Arc::new(BackendManager::new(
         http_client.clone(),
         cli.config.config_path.clone(),
-        backend_router.clone(),
         cli.health.health_check_interval,
         cli.health.health_check_timeout,
         &registry,
@@ -95,7 +92,7 @@ pub async fn main(cli: &Cli) -> Result<(), Error> {
     // Setup API router if configured
     let axum_router_api = if cli.api.api_hostname.is_some() || cli.api.api_listen.is_some() {
         Some(
-            setup_api_axum_router(cli, backend_manager.clone())
+            setup_api_axum_router(cli.api.api_token.clone(), backend_manager.clone())
                 .context("unable to setup API Axum Router")?,
         )
     } else {
@@ -105,7 +102,7 @@ pub async fn main(cli: &Cli) -> Result<(), Error> {
     let axum_router = setup_axum_router(
         cli,
         axum_router_api.clone(),
-        backend_router,
+        backend_manager.clone(),
         vector.clone(),
         &registry,
     )

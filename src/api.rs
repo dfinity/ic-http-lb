@@ -13,10 +13,7 @@ use derive_new::new;
 use http::{StatusCode, header::AUTHORIZATION};
 use tracing::warn;
 
-use crate::{
-    backend::{BackendManager, Config},
-    cli::Cli,
-};
+use crate::backend::{BackendManager, Config};
 
 #[derive(Debug, new)]
 pub struct ApiState {
@@ -139,14 +136,11 @@ pub async fn config_put(
 }
 
 pub fn setup_api_axum_router(
-    cli: &Cli,
+    api_token: Option<String>,
     backend_manager: Arc<BackendManager>,
 ) -> Result<Router, Error> {
     let state = Arc::new(ApiState::new(
-        cli.api
-            .api_token
-            .clone()
-            .ok_or_else(|| anyhow!("API token not specified"))?,
+        api_token.ok_or_else(|| anyhow!("API token not specified"))?,
         backend_manager,
     ));
 
@@ -165,34 +159,30 @@ pub fn setup_api_axum_router(
 
 #[cfg(test)]
 mod test {
-    use std::path::PathBuf;
+    use std::{path::PathBuf, str::FromStr, time::Duration};
 
-    use arc_swap::ArcSwapOption;
     use axum::body::Body;
-    use clap::Parser;
-    use http::{Request, Uri};
+    use http::{HeaderValue, Method, Request, Uri};
     use ic_bn_lib::{http::HyperClient, hval};
     use prometheus::Registry;
+    use tokio::fs;
     use tower::ServiceExt;
 
     use super::*;
 
     #[tokio::test]
     async fn test_api_auth() {
-        let args: Vec<&str> = vec!["", "--api-token", "deadbeef", "--config-path", "foo"];
-        let cli = Cli::parse_from(args);
-
         let client = Arc::new(HyperClient::default());
         let bm = BackendManager::new(
             client,
             PathBuf::new(),
-            Arc::new(ArcSwapOption::empty()),
-            cli.health.health_check_interval,
-            cli.health.health_check_timeout,
+            Duration::from_secs(1),
+            Duration::from_secs(3),
             &Registry::new(),
         );
 
-        let router = setup_api_axum_router(&cli, Arc::new(bm)).unwrap();
+        let token = "deadbeef".to_string();
+        let router = setup_api_axum_router(Some(token.clone()), Arc::new(bm)).unwrap();
 
         // Bad header
         let mut req = Request::builder()
@@ -230,10 +220,47 @@ mod test {
             .body(Body::empty())
             .unwrap();
         *req.uri_mut() = Uri::from_static("http://foo/config/get");
-        req.headers_mut()
-            .insert(AUTHORIZATION, hval!("Bearer deadbeef"));
+        req.headers_mut().insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+        );
 
         let resp = router.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_config() {
+        let client = Arc::new(HyperClient::default());
+        let bm = BackendManager::new(
+            client,
+            PathBuf::from_str("testconfig.yaml").unwrap(),
+            Duration::from_secs(1),
+            Duration::from_secs(3),
+            &Registry::new(),
+        );
+
+        let token = "deadbeef".to_string();
+        let router = setup_api_axum_router(Some(token.clone()), Arc::new(bm)).unwrap();
+
+        // Upload config
+        let config = include_bytes!("../config.yaml").as_slice();
+        let body = Body::from(config);
+
+        let mut req = Request::builder()
+            .uri("/config/put")
+            .method(Method::PUT)
+            .body(body)
+            .unwrap();
+        *req.uri_mut() = Uri::from_static("http://foo/config/put");
+        req.headers_mut().insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+        );
+
+        let resp = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        fs::remove_file("testconfig.yaml").await.unwrap();
     }
 }

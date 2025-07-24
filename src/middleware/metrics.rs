@@ -26,7 +26,11 @@ use prometheus::{
 use serde_json::json;
 use tracing::info;
 
-use crate::{backend::Backend, middleware::request_id::RequestId};
+use crate::{
+    backend::Backend,
+    core::{ENV, HOSTNAME},
+    middleware::request_id::RequestId,
+};
 
 pub const HTTP_DURATION_BUCKETS: &[f64] = &[0.05, 0.2, 1.0, 2.0];
 
@@ -87,6 +91,7 @@ pub async fn middleware(
         .map(|x| x as i64)
         .unwrap_or(-1);
     let remote_addr = conn_info.remote_addr.ip().to_string();
+    let timestamp = time::OffsetDateTime::now_utc();
 
     request.headers_mut().insert(
         X_REAL_IP,
@@ -115,6 +120,7 @@ pub async fn middleware(
         .map(|x| x.to_string())
         .unwrap_or_default();
     let status = response.status();
+    let conn_id = conn_info.id.to_string();
 
     let (tls_version, tls_cipher, tls_handshake) =
         tls_info.as_ref().map_or(("", "", Duration::ZERO), |x| {
@@ -143,6 +149,7 @@ pub async fn middleware(
     if state.log_requests {
         info!(
             request_id,
+            conn_id,
             tls_version,
             tls_cipher,
             tls_handshake = tls_handshake.as_secs_f64(),
@@ -162,6 +169,10 @@ pub async fn middleware(
 
     if let Some(v) = &state.vector {
         let event = json! ({
+            "env": ENV.get().unwrap(),
+            "hostname": HOSTNAME.get().unwrap(),
+            "timestamp": timestamp.unix_timestamp(),
+            "conn_id": conn_id,
             "request_id": request_id,
             "tls_version": tls_version,
             "tls_cipher": tls_cipher,
@@ -171,7 +182,7 @@ pub async fn middleware(
             "method": method,
             "path": path,
             "query": query,
-            "status": status.as_str(),
+            "status": status.as_u16(),
             "duration": duration,
             "backend": backend,
             "remote_addr": remote_addr,

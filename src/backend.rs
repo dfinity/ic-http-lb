@@ -34,6 +34,7 @@ pub type LBBackendRouter = BackendRouter<Arc<Backend>, Request, Response, ic_bn_
 pub struct Config {
     strategy: Strategy,
     backends: Vec<BackendConf>,
+    fallback: Option<Vec<BackendConf>>,
 }
 
 impl Default for Config {
@@ -41,6 +42,7 @@ impl Default for Config {
         Self {
             strategy: Strategy::LeastOutstandingRequests,
             backends: vec![],
+            fallback: None,
         }
     }
 }
@@ -87,23 +89,26 @@ impl From<BackendConf> for Backend {
 
 pub fn setup_backend_router(
     client: Arc<dyn ClientHttp<Body>>,
-    config: Config,
+    backends: Vec<BackendConf>,
+    strategy: Strategy,
     check_interval: Duration,
     check_timeout: Duration,
     metrics_health_checker: health_check::Metrics,
     metrics_distributor: distributor::Metrics,
 ) -> LBBackendRouter {
-    let mut backends = vec![];
-    for b in config.backends {
-        let weight = b.weight;
-        backends.push((Arc::new(b.into()), weight));
-    }
+    let backends = backends
+        .into_iter()
+        .map(|x| {
+            let w = x.weight;
+            (Arc::new(x.into()), w)
+        })
+        .collect::<Vec<_>>();
 
     BackendRouter::new(
         &backends,
         Arc::new(RequestExecutor::new(client.clone())),
         Arc::new(BackendHealthChecker::new(client, check_timeout)),
-        config.strategy,
+        strategy,
         check_interval,
         metrics_health_checker,
         metrics_distributor,
@@ -116,6 +121,7 @@ pub struct BackendManager {
     client: Arc<dyn ClientHttp<Body>>,
     config_path: PathBuf,
     backend_router: Arc<ArcSwapOption<LBBackendRouter>>,
+    backend_router_fallback: Arc<ArcSwapOption<LBBackendRouter>>,
     check_interval: Duration,
     check_timeout: Duration,
     config: Mutex<Config>,
@@ -128,7 +134,6 @@ impl BackendManager {
     pub fn new(
         client: Arc<dyn ClientHttp<Body>>,
         config_path: PathBuf,
-        backend_router: Arc<ArcSwapOption<LBBackendRouter>>,
         check_interval: Duration,
         check_timeout: Duration,
         registry: &Registry,
@@ -136,7 +141,8 @@ impl BackendManager {
         Self {
             client,
             config_path,
-            backend_router,
+            backend_router: Arc::new(ArcSwapOption::empty()),
+            backend_router_fallback: Arc::new(ArcSwapOption::empty()),
             check_interval,
             check_timeout,
             config: Mutex::new(Config::default()),
@@ -160,6 +166,22 @@ impl BackendManager {
         }
     }
 
+    fn create_backend_router(
+        &self,
+        backends: Vec<BackendConf>,
+        strategy: Strategy,
+    ) -> LBBackendRouter {
+        setup_backend_router(
+            self.client.clone(),
+            backends.clone(),
+            strategy,
+            self.check_interval,
+            self.check_timeout,
+            self.metrics_health_checker.clone(),
+            self.metrics_distributor.clone(),
+        )
+    }
+
     /// Applies the config
     pub async fn apply(&self, config: MutexGuard<'_, Config>) {
         // Filter out disabled backends
@@ -170,36 +192,49 @@ impl BackendManager {
             .filter(|x| x.enabled)
             .collect::<Vec<_>>();
 
-        let config = Config {
-            strategy: config.strategy,
-            backends: backends_enabled.clone(),
+        let backends_fallback_enabled = config
+            .fallback
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|x| x.enabled)
+            .collect::<Vec<_>>();
+
+        // Prepare new BackendRouter
+        let backend_router = if !backends_enabled.is_empty() {
+            let r = self.create_backend_router(backends_enabled.clone(), config.strategy);
+            Self::wait_healthchecks(&r).await;
+            Some(Arc::new(r))
+        } else {
+            None
         };
 
-        // Prepare a new BackendRouter
-        let backend_router = setup_backend_router(
-            self.client.clone(),
-            config,
-            self.check_interval,
-            self.check_timeout,
-            self.metrics_health_checker.clone(),
-            self.metrics_distributor.clone(),
-        );
+        // Prepare new fallback BackendRouter
+        let backend_router_fallback = if !backends_fallback_enabled.is_empty() {
+            let r = self.create_backend_router(backends_fallback_enabled.clone(), config.strategy);
+            Self::wait_healthchecks(&r).await;
+            Some(Arc::new(r))
+        } else {
+            None
+        };
 
-        // If there are any enabled backends -  wait until all of them have known health status
-        if !backends_enabled.is_empty() {
-            Self::wait_healthchecks(&backend_router).await;
-        }
-
-        // Get the old BackendRouter if any
+        // Get the old BackendRouters if any
         let old_backend_router = self.backend_router.load_full();
+        let old_backend_router_fallback = self.backend_router_fallback.load_full();
 
-        // Install the new one
-        self.backend_router.store(Some(Arc::new(backend_router)));
+        // Install the new ones if any
+        self.backend_router.store(backend_router);
+        self.backend_router_fallback.store(backend_router_fallback);
 
-        // Shut down the old one if it exists
+        // Shut down the old ones if they exist
         if let Some(v) = old_backend_router {
             v.stop().await;
             warn!("Old backend router stopped");
+        }
+
+        if let Some(v) = old_backend_router_fallback {
+            v.stop().await;
+            warn!("Old fallback backend router stopped");
         }
 
         warn!("New backends applied");
@@ -232,6 +267,15 @@ impl BackendManager {
             bail!("Non-unique backend names");
         }
 
+        if config_new
+            .fallback
+            .clone()
+            .map(|x| x.iter().map(|x| x.name.clone()).all_unique())
+            == Some(false)
+        {
+            bail!("Non-unique backend names");
+        }
+
         let mut config = self.config.lock().await;
         *config = config_new;
         self.apply(config).await;
@@ -252,6 +296,16 @@ impl BackendManager {
         fs::write(&self.config_path, &yaml)
             .await
             .context("unable to save config to disk")
+    }
+
+    /// Get the main or the fallback router
+    pub fn get_backend_router(&self) -> Option<Arc<LBBackendRouter>> {
+        self.backend_router
+            .load_full()
+            // Return main router only if it has healthy nodes
+            .filter(|x| !x.get_healthy().is_empty())
+            // Otherwise fallback, if there's one
+            .or_else(|| self.backend_router_fallback.load_full())
     }
 
     /// Get a list of healthy nodes

@@ -30,6 +30,7 @@ tikv-jemallocator = "0.6.0"
 tikv-jemalloc-ctl = { version = "0.6.0", features = ["stats"] }
 tokio = { version = "1.46.1", features = ["full"] }
 tokio-util = { version = "0.7.12", features = ["full"] }
+time = { version = "0.3.36", features = ["macros", "serde"] }
 tower = { version = "0.5.1", features = ["limit"] }
 tower-http = { version = "0.6.1", features = ["cors", "compression-full"] }
 tracing = "0.1.40"

@@ -10,3 +10,9 @@ backends:
     url: http://127.0.0.1:9002
     weight: 2
     enabled: true
+
+fallback:
+  - name: host3
+    url: http://127.0.0.1:9003
+    weight: 1
+    enabled: true
