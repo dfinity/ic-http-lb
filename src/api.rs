@@ -209,7 +209,13 @@ mod test {
         );
 
         let token = "deadbeef".to_string();
-        let router = setup_api_axum_router(Some(token.clone()), Arc::new(bm)).unwrap();
+        let router = setup_api_axum_router(
+            #[cfg(target_os = "linux")]
+            false,
+            Some(token.clone()),
+            Arc::new(bm),
+        )
+        .unwrap();
 
         // Bad header
         let mut req = Request::builder()
@@ -268,7 +274,13 @@ mod test {
         );
 
         let token = "deadbeef".to_string();
-        let router = setup_api_axum_router(Some(token.clone()), Arc::new(bm)).unwrap();
+        let router = setup_api_axum_router(
+            #[cfg(target_os = "linux")]
+            false,
+            Some(token.clone()),
+            Arc::new(bm),
+        )
+        .unwrap();
 
         // Upload config
         let config = include_bytes!("../config.yaml").as_slice();
