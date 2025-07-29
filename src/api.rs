@@ -11,6 +11,8 @@ use axum::{
 use bytes::Bytes;
 use derive_new::new;
 use http::{StatusCode, header::AUTHORIZATION};
+#[cfg(target_os = "linux")]
+use ic_bn_lib::http::middleware::rate_limiter;
 use tracing::warn;
 
 use crate::backend::{BackendManager, Config};
@@ -145,7 +147,9 @@ pub fn setup_api_axum_router(
     ));
 
     let auth = from_fn_with_state(state.clone(), auth_middleware);
-    Ok(Router::new()
+
+    #[allow(unused_mut)]
+    let mut router = Router::new()
         .route("/health", get(health_handler))
         .route(
             "/backend/{backend}/{action}",
@@ -154,7 +158,22 @@ pub fn setup_api_axum_router(
         .route("/config/reload", get(config_reload).layer(auth.clone()))
         .route("/config/get", get(config_get).layer(auth.clone()))
         .route("/config/put", put(config_put).layer(auth))
-        .with_state(state))
+        .with_state(state);
+
+    #[cfg(target_os = "linux")]
+    if cli.misc.enable_sev_snp {
+        router = router.route(
+            "/sev-snp/report",
+            post(ic_bn_lib::utils::sev_snp::handler)
+                .with_state(
+                    ic_bn_lib::utils::sev_snp::SevSnpState::new()
+                        .context("unable to init SEV-SNP")?,
+                )
+                .layer(rate_limiter::layer_global(1, 2)?),
+        );
+    }
+
+    Ok(router)
 }
 
 #[cfg(test)]

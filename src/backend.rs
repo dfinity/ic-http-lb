@@ -25,7 +25,7 @@ use tokio::{
     time::timeout,
 };
 use tokio_util::sync::CancellationToken;
-use tracing::warn;
+use tracing::{info, warn};
 use url::Url;
 
 pub type LBBackendRouter = BackendRouter<Arc<Backend>, Request, Response, ic_bn_lib::http::Error>;
@@ -273,7 +273,7 @@ impl BackendManager {
             .map(|x| x.iter().map(|x| x.name.clone()).all_unique())
             == Some(false)
         {
-            bail!("Non-unique backend names");
+            bail!("Non-unique fallback names");
         }
 
         let mut config = self.config.lock().await;
@@ -377,11 +377,26 @@ impl ChecksTarget<Arc<Backend>> for BackendHealthChecker {
             .body(Body::empty())
             .unwrap();
 
-        let Ok(Ok(res)) = timeout(self.timeout, self.client.execute(req)).await else {
-            return TargetState::Degraded;
+        let res = match timeout(self.timeout, self.client.execute(req)).await {
+            Ok(res) => match res {
+                Ok(v) => v,
+                Err(e) => {
+                    info!("Health check failed for {target}: request failed: {e:#}");
+                    return TargetState::Degraded;
+                }
+            },
+
+            Err(_) => {
+                info!("Health check failed for {target}: request timed out");
+                return TargetState::Degraded;
+            }
         };
 
         if !res.status().is_success() {
+            info!(
+                "Health check failed for {target}: bad status code: {}",
+                res.status()
+            );
             return TargetState::Degraded;
         }
 
