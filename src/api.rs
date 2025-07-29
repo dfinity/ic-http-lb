@@ -11,9 +11,9 @@ use axum::{
 use bytes::Bytes;
 use derive_new::new;
 use http::{StatusCode, header::AUTHORIZATION};
-#[cfg(target_os = "linux")]
-use ic_bn_lib::http::middleware::rate_limiter;
 use tracing::warn;
+#[cfg(target_os = "linux")]
+use {anyhow::Context as _, axum::routing::post, ic_bn_lib::http::middleware::rate_limiter};
 
 use crate::backend::{BackendManager, Config};
 
@@ -138,6 +138,7 @@ pub async fn config_put(
 }
 
 pub fn setup_api_axum_router(
+    #[cfg(target_os = "linux")] enable_sev_snp: bool,
     api_token: Option<String>,
     backend_manager: Arc<BackendManager>,
 ) -> Result<Router, Error> {
@@ -161,7 +162,7 @@ pub fn setup_api_axum_router(
         .with_state(state);
 
     #[cfg(target_os = "linux")]
-    if cli.misc.enable_sev_snp {
+    if enable_sev_snp {
         router = router.route(
             "/sev-snp/report",
             post(ic_bn_lib::utils::sev_snp::handler)
@@ -169,7 +170,14 @@ pub fn setup_api_axum_router(
                     ic_bn_lib::utils::sev_snp::SevSnpState::new()
                         .context("unable to init SEV-SNP")?,
                 )
-                .layer(rate_limiter::layer_global(1, 2)?),
+                .layer(rate_limiter::layer_global(
+                    1,
+                    2,
+                    (
+                        StatusCode::TOO_MANY_REQUESTS,
+                        "Too many requests, try again later",
+                    ),
+                )?),
         );
     }
 

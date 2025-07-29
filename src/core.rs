@@ -92,8 +92,13 @@ pub async fn main(cli: &Cli) -> Result<(), Error> {
     // Setup API router if configured
     let axum_router_api = if cli.api.api_hostname.is_some() || cli.api.api_listen.is_some() {
         Some(
-            setup_api_axum_router(cli.api.api_token.clone(), backend_manager.clone())
-                .context("unable to setup API Axum Router")?,
+            setup_api_axum_router(
+                #[cfg(target_os = "linux")]
+                cli.misc.enable_sev_snp,
+                cli.api.api_token.clone(),
+                backend_manager.clone(),
+            )
+            .context("unable to setup API Axum Router")?,
         )
     } else {
         None
