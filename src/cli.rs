@@ -120,7 +120,7 @@ pub struct Health {
 
     /// How long to wait for the health check to finish.
     /// This is applied on top of all HTTP timeouts and has precedence.
-    #[clap(env, long, default_value = "3s", value_parser = parse_duration)]
+    #[clap(env, long, default_value = "10s", value_parser = parse_duration)]
     pub health_check_timeout: Duration,
 }
 
