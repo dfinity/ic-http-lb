@@ -21,6 +21,8 @@ use tokio::{
     },
 };
 use tracing::warn;
+use tracing_core::LevelFilter;
+use tracing_subscriber::reload::Handle;
 
 use crate::{
     api::setup_api_axum_router, backend::BackendManager, cli::Cli, metrics,
@@ -34,7 +36,10 @@ pub const AUTHOR_NAME: &str = "Boundary Node Team <boundary-nodes@dfinity.org>";
 pub static ENV: OnceLock<String> = OnceLock::new();
 pub static HOSTNAME: OnceLock<String> = OnceLock::new();
 
-pub async fn main(cli: &Cli) -> Result<(), Error> {
+pub async fn main(
+    cli: &Cli,
+    log_handle: Handle<LevelFilter, tracing_subscriber::Registry>,
+) -> Result<(), Error> {
     ENV.set(cli.misc.env.clone()).unwrap();
     HOSTNAME.set(cli.misc.hostname.clone()).unwrap();
 
@@ -97,6 +102,7 @@ pub async fn main(cli: &Cli) -> Result<(), Error> {
                 cli.misc.enable_sev_snp,
                 cli.api.api_token.clone(),
                 backend_manager.clone(),
+                log_handle,
             )
             .context("unable to setup API Axum Router")?,
         )

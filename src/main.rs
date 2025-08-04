@@ -20,7 +20,7 @@ static GLOBAL: Jemalloc = Jemalloc;
 
 fn main() -> Result<(), Error> {
     let cli = Cli::parse();
-    setup_logging(&cli.log).context("unable to setup logging")?;
+    let log_handle = setup_logging(&cli.log).context("unable to setup logging")?;
 
     let threads = if let Some(v) = cli.misc.threads {
         v
@@ -39,7 +39,7 @@ fn main() -> Result<(), Error> {
         .enable_all()
         .worker_threads(threads)
         .build()?
-        .block_on(core::main(&cli))
+        .block_on(core::main(&cli, log_handle))
         .context("Startup failed")?;
 
     Ok(())

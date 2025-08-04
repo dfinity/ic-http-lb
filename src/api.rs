@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{str::FromStr, sync::Arc};
 
 use anyhow::{Error, anyhow};
 use axum::{
@@ -11,7 +11,9 @@ use axum::{
 use bytes::Bytes;
 use derive_new::new;
 use http::{StatusCode, header::AUTHORIZATION};
-use tracing::warn;
+use tracing::{Level, warn};
+use tracing_core::LevelFilter;
+use tracing_subscriber::{Registry, reload::Handle};
 #[cfg(target_os = "linux")]
 use {anyhow::Context as _, axum::routing::post, ic_bn_lib::http::middleware::rate_limiter};
 
@@ -21,6 +23,7 @@ use crate::backend::{BackendManager, Config};
 pub struct ApiState {
     token: String,
     backend_manager: Arc<BackendManager>,
+    log_handle: Arc<Handle<LevelFilter, Registry>>,
 }
 
 pub async fn auth_middleware(
@@ -73,16 +76,33 @@ pub async fn backend_handler(
     Ok((StatusCode::OK, "Ok\n".to_string()))
 }
 
+pub async fn log_handler(
+    State(state): State<Arc<ApiState>>,
+    Path(log_level): Path<String>,
+) -> Result<impl IntoResponse, impl IntoResponse> {
+    let log_level = Level::from_str(&log_level).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("Unable to parse log level: {e:#}"),
+        )
+    })?;
+    let level_filter = LevelFilter::from_level(log_level);
+    let _ = state.log_handle.modify(|f| *f = level_filter);
+
+    Ok::<(StatusCode, String), (StatusCode, String)>((StatusCode::OK, "Ok\n".to_string()))
+}
+
 pub async fn config_reload(
     State(state): State<Arc<ApiState>>,
 ) -> Result<impl IntoResponse, impl IntoResponse> {
     warn!("API request: config reload");
 
-    state
-        .backend_manager
-        .load_config()
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {e:#}")))?;
+    state.backend_manager.load_config().await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Error reloading config: {e:#}"),
+        )
+    })?;
 
     // Oh Rust type inference...
     Ok::<(StatusCode, String), (StatusCode, String)>((StatusCode::OK, "Ok\n".to_string()))
@@ -141,10 +161,12 @@ pub fn setup_api_axum_router(
     #[cfg(target_os = "linux")] enable_sev_snp: bool,
     api_token: Option<String>,
     backend_manager: Arc<BackendManager>,
+    log_handle: Handle<LevelFilter, Registry>,
 ) -> Result<Router, Error> {
     let state = Arc::new(ApiState::new(
         api_token.ok_or_else(|| anyhow!("API token not specified"))?,
         backend_manager,
+        Arc::new(log_handle),
     ));
 
     let auth = from_fn_with_state(state.clone(), auth_middleware);
@@ -152,6 +174,7 @@ pub fn setup_api_axum_router(
     #[allow(unused_mut)]
     let mut router = Router::new()
         .route("/health", get(health_handler))
+        .route("/log/{log_level}", get(log_handler).layer(auth.clone()))
         .route(
             "/backend/{backend}/{action}",
             get(backend_handler).layer(auth.clone()),
@@ -194,6 +217,7 @@ mod test {
     use prometheus::Registry;
     use tokio::fs;
     use tower::ServiceExt;
+    use tracing_subscriber::reload;
 
     use super::*;
 
@@ -208,12 +232,14 @@ mod test {
             &Registry::new(),
         );
 
+        let (_, reload_handle) = reload::Layer::new(LevelFilter::WARN);
         let token = "deadbeef".to_string();
         let router = setup_api_axum_router(
             #[cfg(target_os = "linux")]
             false,
             Some(token.clone()),
             Arc::new(bm),
+            reload_handle,
         )
         .unwrap();
 
@@ -273,12 +299,14 @@ mod test {
             &Registry::new(),
         );
 
+        let (_, reload_handle) = reload::Layer::new(LevelFilter::WARN);
         let token = "deadbeef".to_string();
         let router = setup_api_axum_router(
             #[cfg(target_os = "linux")]
             false,
             Some(token.clone()),
             Arc::new(bm),
+            reload_handle,
         )
         .unwrap();
 
