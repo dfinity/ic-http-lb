@@ -7,7 +7,7 @@ use axum::{body::Body, extract::Request, response::Response};
 use derive_new::new;
 use http::{Uri, Version, uri::PathAndQuery};
 use ic_bn_lib::{
-    http::{ClientHttp, proxy::proxy_http},
+    http::{ClientHttp, headers::strip_connection_headers},
     tasks::Run,
     utils::{
         backend_router::BackendRouter,
@@ -182,6 +182,36 @@ impl BackendManager {
         )
     }
 
+    // Updates given router with new set of backends
+    async fn update_router(
+        &self,
+        router: &Arc<ArcSwapOption<LBBackendRouter>>,
+        backends: Vec<BackendConf>,
+        strategy: Strategy,
+    ) {
+        // Prepare new BackendRouter
+        let router_new = if !backends.is_empty() {
+            let r = self.create_backend_router(backends.clone(), strategy);
+            // Wait until all backends have known health status
+            Self::wait_healthchecks(&r).await;
+            Some(Arc::new(r))
+        } else {
+            None
+        };
+
+        // Get the old BackendRouter
+        let router_old = self.backend_router.load_full();
+
+        // Install the new one
+        router.store(router_new);
+
+        // Shut down the old one if any
+        if let Some(v) = router_old {
+            v.stop().await;
+            warn!("Old backend router stopped");
+        }
+    }
+
     /// Applies the config
     pub async fn apply(&self, config: MutexGuard<'_, Config>) {
         // Filter out disabled backends
@@ -200,42 +230,15 @@ impl BackendManager {
             .filter(|x| x.enabled)
             .collect::<Vec<_>>();
 
-        // Prepare new BackendRouter
-        let backend_router = if !backends_enabled.is_empty() {
-            let r = self.create_backend_router(backends_enabled.clone(), config.strategy);
-            Self::wait_healthchecks(&r).await;
-            Some(Arc::new(r))
-        } else {
-            None
-        };
+        self.update_router(&self.backend_router, backends_enabled, config.strategy)
+            .await;
 
-        // Prepare new fallback BackendRouter
-        let backend_router_fallback = if !backends_fallback_enabled.is_empty() {
-            let r = self.create_backend_router(backends_fallback_enabled.clone(), config.strategy);
-            Self::wait_healthchecks(&r).await;
-            Some(Arc::new(r))
-        } else {
-            None
-        };
-
-        // Get the old BackendRouters if any
-        let old_backend_router = self.backend_router.load_full();
-        let old_backend_router_fallback = self.backend_router_fallback.load_full();
-
-        // Install the new ones if any
-        self.backend_router.store(backend_router);
-        self.backend_router_fallback.store(backend_router_fallback);
-
-        // Shut down the old ones if they exist
-        if let Some(v) = old_backend_router {
-            v.stop().await;
-            warn!("Old backend router stopped");
-        }
-
-        if let Some(v) = old_backend_router_fallback {
-            v.stop().await;
-            warn!("Old fallback backend router stopped");
-        }
+        self.update_router(
+            &self.backend_router_fallback,
+            backends_fallback_enabled,
+            config.strategy,
+        )
+        .await;
 
         warn!("New backends applied");
     }
@@ -256,24 +259,17 @@ impl BackendManager {
         Ok(())
     }
 
-    /// Replaces the current config with provided one
+    /// Replaces the current config with the provided one
     pub async fn set_config(&self, config_new: Config) -> Result<(), Error> {
+        // Ensure all backend names are unique
         if !config_new
             .backends
             .iter()
+            .chain(config_new.fallback.iter().flatten())
             .map(|x| x.name.clone())
             .all_unique()
         {
             bail!("Non-unique backend names");
-        }
-
-        if config_new
-            .fallback
-            .clone()
-            .map(|x| x.iter().map(|x| x.name.clone()).all_unique())
-            == Some(false)
-        {
-            bail!("Non-unique fallback names");
         }
 
         let mut config = self.config.lock().await;
@@ -441,8 +437,12 @@ impl ExecutesRequest<Arc<Backend>> for RequestExecutor {
         // Sending HTTP/1.1 requests over HTTP/2 connections is fine.
         *req.version_mut() = Version::HTTP_11;
 
-        proxy_http(req, &self.client).await.map(|mut x| {
-            // Insert the backend into response for observability
+        // Sanitize the request
+        strip_connection_headers(req.headers_mut());
+
+        // Execute it
+        self.client.execute(req).await.map(|mut x| {
+            // Insert the backend into the response for observability
             x.extensions_mut().insert(backend.clone());
             x
         })

@@ -90,7 +90,7 @@ pub async fn middleware(
         .exact()
         .map(|x| x as i64)
         .unwrap_or(-1);
-    let remote_addr = conn_info.remote_addr.ip().to_string();
+    let remote_addr = conn_info.remote_addr.ip().to_canonical().to_string();
     let timestamp = time::OffsetDateTime::now_utc();
 
     request.headers_mut().insert(

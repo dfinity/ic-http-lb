@@ -21,3 +21,4 @@ target
 #.idea/
 
 build-linux.sh
+.idea

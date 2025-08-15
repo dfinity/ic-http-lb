@@ -17,7 +17,10 @@ use tracing_subscriber::{Registry, reload::Handle};
 #[cfg(target_os = "linux")]
 use {anyhow::Context as _, axum::routing::post, ic_bn_lib::http::middleware::rate_limiter};
 
-use crate::backend::{BackendManager, Config};
+use crate::{
+    backend::{BackendManager, Config},
+    cli::Cli,
+};
 
 #[derive(Debug, new)]
 pub struct ApiState {
@@ -158,13 +161,15 @@ pub async fn config_put(
 }
 
 pub fn setup_api_axum_router(
-    #[cfg(target_os = "linux")] enable_sev_snp: bool,
-    api_token: Option<String>,
+    cli: &Cli,
     backend_manager: Arc<BackendManager>,
     log_handle: Handle<LevelFilter, Registry>,
 ) -> Result<Router, Error> {
     let state = Arc::new(ApiState::new(
-        api_token.ok_or_else(|| anyhow!("API token not specified"))?,
+        cli.api
+            .api_token
+            .clone()
+            .ok_or_else(|| anyhow!("API token not specified"))?,
         backend_manager,
         Arc::new(log_handle),
     ));
@@ -185,17 +190,20 @@ pub fn setup_api_axum_router(
         .with_state(state);
 
     #[cfg(target_os = "linux")]
-    if enable_sev_snp {
+    if cli.misc.enable_sev_snp {
         router = router.route(
             "/sev-snp/report",
             post(ic_bn_lib::utils::sev_snp::handler)
                 .with_state(
-                    ic_bn_lib::utils::sev_snp::SevSnpState::new()
-                        .context("unable to init SEV-SNP")?,
+                    ic_bn_lib::utils::sev_snp::SevSnpState::new(
+                        cli.misc.sev_snp_cache_ttl,
+                        cli.misc.sev_snp_cache_size,
+                    )
+                    .context("unable to init SEV-SNP")?,
                 )
                 .layer(rate_limiter::layer_global(
-                    1,
-                    2,
+                    50,
+                    100,
                     (
                         StatusCode::TOO_MANY_REQUESTS,
                         "Too many requests, try again later",
@@ -212,6 +220,7 @@ mod test {
     use std::{path::PathBuf, str::FromStr, time::Duration};
 
     use axum::body::Body;
+    use clap::Parser;
     use http::{HeaderValue, Method, Request, Uri};
     use ic_bn_lib::{http::HyperClient, hval};
     use prometheus::Registry;
@@ -223,6 +232,9 @@ mod test {
 
     #[tokio::test]
     async fn test_api_auth() {
+        let args: Vec<&str> = vec!["", "--config-path", "foo", "--api-token", "deadbeef"];
+        let cli = Cli::parse_from(args);
+
         let client = Arc::new(HyperClient::default());
         let bm = BackendManager::new(
             client,
@@ -233,15 +245,7 @@ mod test {
         );
 
         let (_, reload_handle) = reload::Layer::new(LevelFilter::WARN);
-        let token = "deadbeef".to_string();
-        let router = setup_api_axum_router(
-            #[cfg(target_os = "linux")]
-            false,
-            Some(token.clone()),
-            Arc::new(bm),
-            reload_handle,
-        )
-        .unwrap();
+        let router = setup_api_axum_router(&cli, Arc::new(bm), reload_handle).unwrap();
 
         // Bad header
         let mut req = Request::builder()
@@ -281,7 +285,7 @@ mod test {
         *req.uri_mut() = Uri::from_static("http://foo/config/get");
         req.headers_mut().insert(
             AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+            HeaderValue::from_str(&format!("Bearer {}", cli.api.api_token.unwrap())).unwrap(),
         );
 
         let resp = router.clone().oneshot(req).await.unwrap();
@@ -290,6 +294,9 @@ mod test {
 
     #[tokio::test]
     async fn test_config() {
+        let args: Vec<&str> = vec!["", "--config-path", "foo", "--api-token", "deadbeef"];
+        let cli = Cli::parse_from(args);
+
         let client = Arc::new(HyperClient::default());
         let bm = BackendManager::new(
             client,
@@ -300,15 +307,7 @@ mod test {
         );
 
         let (_, reload_handle) = reload::Layer::new(LevelFilter::WARN);
-        let token = "deadbeef".to_string();
-        let router = setup_api_axum_router(
-            #[cfg(target_os = "linux")]
-            false,
-            Some(token.clone()),
-            Arc::new(bm),
-            reload_handle,
-        )
-        .unwrap();
+        let router = setup_api_axum_router(&cli, Arc::new(bm), reload_handle).unwrap();
 
         // Upload config
         let config = include_bytes!("../config.yaml").as_slice();
@@ -322,7 +321,7 @@ mod test {
         *req.uri_mut() = Uri::from_static("http://foo/config/put");
         req.headers_mut().insert(
             AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+            HeaderValue::from_str(&format!("Bearer {}", cli.api.api_token.unwrap())).unwrap(),
         );
 
         let resp = router.clone().oneshot(req).await.unwrap();
