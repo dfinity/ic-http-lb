@@ -5,6 +5,7 @@ use fqdn::FQDN;
 use humantime::parse_duration;
 use ic_bn_lib::{
     http::{self, dns},
+    parse_size,
     tls::acme::AcmeUrl,
     vector::cli::Vector,
 };
@@ -30,6 +31,12 @@ pub struct Cli {
 
     #[command(flatten, next_help_heading = "Network")]
     pub network: Network,
+
+    #[command(flatten, next_help_heading = "Limits")]
+    pub limits: Limits,
+
+    #[command(flatten, next_help_heading = "Retry")]
+    pub retry: Retry,
 
     #[command(flatten, next_help_heading = "API")]
     pub api: Api,
@@ -160,6 +167,32 @@ pub struct Config {
     /// Path to the YAML file with backend configuration
     #[clap(env, long)]
     pub config_path: PathBuf,
+}
+
+#[derive(Args)]
+pub struct Retry {
+    /// Number of request attempts to do.
+    /// Only network errors are retried, not HTTP codes.
+    /// If the number of attempts is 1 then we don't retry and don't buffer the request body.
+    #[clap(env, long, default_value = "3", value_parser = clap::value_parser!(u8).range(1..))]
+    pub retry_attempts: u8,
+
+    /// Initial retry interval, with each retry it is doubled.
+    /// If there are no healthy nodes then we wait 1/4 of `health_check_interval` instead in
+    /// hope that some node would become healthy.
+    #[clap(env, long, default_value = "50ms", value_parser = parse_duration)]
+    pub retry_interval: Duration,
+}
+
+#[derive(Args)]
+pub struct Limits {
+    /// Maximum request body size.
+    #[clap(env, long, default_value = "10MB", value_parser = parse_size)]
+    pub limits_request_body_size: usize,
+
+    /// Maximum time allowed to send the request body.
+    #[clap(env, long, default_value = "30s", value_parser = parse_duration)]
+    pub limits_request_body_timeout: Duration,
 }
 
 #[derive(Args)]

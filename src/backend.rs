@@ -368,7 +368,7 @@ pub struct BackendHealthChecker {
 #[async_trait]
 impl ChecksTarget<Arc<Backend>> for BackendHealthChecker {
     async fn check(&self, target: &Arc<Backend>) -> TargetState {
-        let req = http::Request::builder()
+        let req = Request::builder()
             .uri(target.uri_health.clone())
             .body(Body::empty())
             .unwrap();
@@ -410,8 +410,8 @@ pub struct RequestExecutor {
 
 #[async_trait]
 impl ExecutesRequest<Arc<Backend>> for RequestExecutor {
-    type Request = http::Request<Body>;
-    type Response = http::Response<Body>;
+    type Request = Request<Body>;
+    type Response = Response<Body>;
     type Error = ic_bn_lib::http::Error;
 
     async fn execute(
@@ -419,7 +419,7 @@ impl ExecutesRequest<Arc<Backend>> for RequestExecutor {
         backend: &Arc<Backend>,
         mut req: Self::Request,
     ) -> Result<Self::Response, Self::Error> {
-        let uri = Uri::builder()
+        let uri = match Uri::builder()
             .scheme(backend.url.scheme())
             .authority(backend.url.authority())
             .path_and_query(
@@ -429,7 +429,18 @@ impl ExecutesRequest<Arc<Backend>> for RequestExecutor {
                     .as_str(),
             )
             .build()
-            .context("invalid URL")?;
+        {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(
+                    "Invalid URL '{}://{}/{:?}': {e:#}",
+                    backend.url.scheme(),
+                    backend.url.authority(),
+                    req.uri().path_and_query(),
+                );
+                return Err(e.into());
+            }
+        };
 
         *req.uri_mut() = uri;
 
@@ -441,10 +452,16 @@ impl ExecutesRequest<Arc<Backend>> for RequestExecutor {
         strip_connection_headers(req.headers_mut());
 
         // Execute it
-        self.client.execute(req).await.map(|mut x| {
+        let result = self.client.execute(req).await.map(|mut x| {
             // Insert the backend into the response for observability
             x.extensions_mut().insert(backend.clone());
             x
-        })
+        });
+
+        if let Err(e) = &result {
+            warn!("Unable to execute request: {e:#}");
+        }
+
+        result
     }
 }
