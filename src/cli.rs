@@ -5,7 +5,7 @@ use fqdn::FQDN;
 use humantime::parse_duration;
 use ic_bn_lib::{
     http::{self, dns},
-    parse_size,
+    parse_size_usize,
     tls::acme::AcmeUrl,
     vector::cli::Vector,
 };
@@ -187,7 +187,7 @@ pub struct Retry {
 #[derive(Args)]
 pub struct Limits {
     /// Maximum request body size.
-    #[clap(env, long, default_value = "10MB", value_parser = parse_size)]
+    #[clap(env, long, default_value = "10MB", value_parser = parse_size_usize)]
     pub limits_request_body_size: usize,
 
     /// Maximum time allowed to send the request body.
