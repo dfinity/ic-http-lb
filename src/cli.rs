@@ -53,6 +53,10 @@ pub struct Cli {
     #[command(flatten, next_help_heading = "Logging")]
     pub log: Log,
 
+    #[cfg(target_os = "linux")]
+    #[command(flatten, next_help_heading = "SEV-SNP")]
+    pub sev_snp: ic_bn_lib::utils::sev_snp::SevSnp,
+
     #[command(flatten, next_help_heading = "Misc")]
     pub misc: Misc,
 }
@@ -230,21 +234,6 @@ pub struct Misc {
     /// Defaults to the number of CPUs
     #[clap(env, long)]
     pub threads: Option<usize>,
-
-    /// Enable SEV-SNP measurement reporting
-    #[cfg(target_os = "linux")]
-    #[clap(env, long)]
-    pub enable_sev_snp: bool,
-
-    /// Cache TTL for SEV-SNP reports
-    #[cfg(target_os = "linux")]
-    #[clap(env, long, default_value = "30s", value_parser = parse_duration)]
-    pub sev_snp_cache_ttl: Duration,
-
-    /// Max cache size for SEV-SNP reports
-    #[cfg(target_os = "linux")]
-    #[clap(env, long, default_value = "10m", value_parser = ic_bn_lib::parse_size)]
-    pub sev_snp_cache_size: u64,
 }
 
 #[cfg(test)]
