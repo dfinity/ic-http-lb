@@ -30,6 +30,7 @@ use crate::{
     backend::Backend,
     core::{ENV, HOSTNAME},
     middleware::request_id::RequestId,
+    routing::Retries,
 };
 
 pub const HTTP_DURATION_BUCKETS: &[f64] = &[0.05, 0.2, 1.0, 2.0];
@@ -42,7 +43,7 @@ pub struct Metrics {
 
 impl Metrics {
     pub fn new(registry: &Registry) -> Self {
-        const LABELS_HTTP: &[&str] = &["tls", "method", "http", "status", "backend"];
+        const LABELS_HTTP: &[&str] = &["tls", "method", "http", "status", "backend", "retried"];
 
         Self {
             requests: register_int_counter_vec_with_registry!(
@@ -121,6 +122,11 @@ pub async fn middleware(
         .unwrap_or_default();
     let status = response.status();
     let conn_id = conn_info.id.to_string();
+    let retries = response
+        .extensions_mut()
+        .remove::<Retries>()
+        .map(|x| x.0)
+        .unwrap_or(0);
 
     let (tls_version, tls_cipher, tls_handshake) =
         tls_info.as_ref().map_or(("", "", Duration::ZERO), |x| {
@@ -137,6 +143,7 @@ pub async fn middleware(
         http_version,
         status.as_str(),
         backend.as_str(),
+        if retries > 0 { "yes" } else { "no" },
     ];
 
     state.metrics.requests.with_label_values(labels).inc();
