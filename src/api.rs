@@ -82,50 +82,47 @@ pub async fn backend_handler(
 pub async fn log_handler(
     State(state): State<Arc<ApiState>>,
     Path(log_level): Path<String>,
-) -> Result<impl IntoResponse, impl IntoResponse> {
-    let log_level = Level::from_str(&log_level).map_err(|e| {
-        (
+) -> Response {
+    let Ok(log_level) = Level::from_str(&log_level) else {
+        return (
             StatusCode::BAD_REQUEST,
-            format!("Unable to parse log level: {e:#}"),
+            format!("Unable to parse '{log_level}' as log level"),
         )
-    })?;
+            .into_response();
+    };
     let level_filter = LevelFilter::from_level(log_level);
     let _ = state.log_handle.modify(|f| *f = level_filter);
 
-    Ok::<(StatusCode, String), (StatusCode, String)>((StatusCode::OK, "Ok\n".to_string()))
+    "Ok\n".into_response()
 }
 
-pub async fn config_reload(
-    State(state): State<Arc<ApiState>>,
-) -> Result<impl IntoResponse, impl IntoResponse> {
+pub async fn config_reload(State(state): State<Arc<ApiState>>) -> Response {
     warn!("API request: config reload");
 
-    state.backend_manager.load_config().await.map_err(|e| {
-        (
+    if let Err(e) = state.backend_manager.load_config().await {
+        return (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Error reloading config: {e:#}"),
         )
-    })?;
+            .into_response();
+    };
 
-    // Oh Rust type inference...
-    Ok::<(StatusCode, String), (StatusCode, String)>((StatusCode::OK, "Ok\n".to_string()))
+    "Ok\n".into_response()
 }
 
-pub async fn config_get(
-    State(state): State<Arc<ApiState>>,
-) -> Result<impl IntoResponse, impl IntoResponse> {
+pub async fn config_get(State(state): State<Arc<ApiState>>) -> Response {
     warn!("API request: config get");
 
     let cfg = state.backend_manager.get_config().await;
-    let cfg = serde_json::to_string_pretty(&cfg).map_err(|e| {
-        (
+    let Ok(cfg) = serde_json::to_string_pretty(&cfg) else {
+        return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("unable to encode to JSON: {e:#}"),
+            "Unable to encode to JSON",
         )
-    })?;
+            .into_response();
+    };
 
-    // Oh Rust type inference...
-    Ok::<(StatusCode, String), (StatusCode, String)>((StatusCode::OK, cfg))
+    cfg.into_response()
 }
 
 pub async fn config_put(
