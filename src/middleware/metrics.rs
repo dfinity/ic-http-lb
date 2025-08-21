@@ -12,7 +12,7 @@ use axum::{
 };
 use bytes::Bytes;
 use derive_new::new;
-use http::HeaderValue;
+use http::{HeaderValue, StatusCode};
 use ic_bn_lib::{
     http::{
         ConnInfo, extract_authority, headers::X_REAL_IP, http_method, http_version, server::TlsInfo,
@@ -24,6 +24,7 @@ use prometheus::{
     register_int_counter_vec_with_registry,
 };
 use serde_json::json;
+use tokio::sync::oneshot;
 use tracing::info;
 
 use crate::{
@@ -65,6 +66,24 @@ impl Metrics {
     }
 }
 
+struct ResponseMeta {
+    status: StatusCode,
+    duration: f64,
+    backend: String,
+    size: i64,
+}
+
+impl Default for ResponseMeta {
+    fn default() -> Self {
+        Self {
+            status: StatusCode::REQUEST_TIMEOUT,
+            duration: 0.0,
+            backend: "unknown".into(),
+            size: 0,
+        }
+    }
+}
+
 #[derive(new)]
 pub struct MetricsState {
     vector: Option<Arc<Vector>>,
@@ -84,6 +103,12 @@ pub async fn middleware(
     let http_version = http_version(request.version());
     let path = request.uri().path().to_string();
     let query = request.uri().query().unwrap_or("").to_string();
+    let conn_id = conn_info.id.to_string();
+    let request_id = request
+        .extensions_mut()
+        .remove::<RequestId>()
+        .map(|x| x.to_string())
+        .unwrap_or_default();
     let request_size = request
         .body()
         .size_hint()
@@ -92,11 +117,90 @@ pub async fn middleware(
         .unwrap_or(-1);
     let remote_addr = conn_info.remote_addr.ip().to_canonical().to_string();
     let timestamp = time::OffsetDateTime::now_utc();
+    let (tls_version, tls_cipher, tls_handshake) =
+        tls_info.as_ref().map_or(("", "", Duration::ZERO), |x| {
+            (
+                x.protocol.as_str().unwrap(),
+                x.cipher.as_str().unwrap(),
+                x.handshake_dur,
+            )
+        });
 
     request.headers_mut().insert(
         X_REAL_IP,
         HeaderValue::from_maybe_shared(Bytes::from(remote_addr.clone())).unwrap(),
     );
+
+    // Channels to send response metadata to the background task
+    let (tx, rx) = oneshot::channel();
+
+    // Spawn a task to log the event in case of future cancellation
+    tokio::spawn(async move {
+        // If the future is cancelled then TX will be dropped and we'll get a default value
+        let meta: ResponseMeta = rx.await.unwrap_or_default();
+
+        let labels = &[
+            tls_version,
+            method,
+            http_version,
+            meta.status.as_str(),
+            meta.backend.as_str(),
+        ];
+
+        state.metrics.requests.with_label_values(labels).inc();
+        state
+            .metrics
+            .duration
+            .with_label_values(labels)
+            .observe(meta.duration);
+
+        if state.log_requests {
+            info!(
+                request_id,
+                conn_id,
+                tls_version,
+                tls_cipher,
+                tls_handshake = tls_handshake.as_secs_f64(),
+                http_version,
+                authority,
+                method,
+                path,
+                query,
+                remote_addr,
+                status = meta.status.as_str(),
+                duration = meta.duration,
+                backend = meta.backend,
+                request_size,
+                response_size = meta.size,
+            )
+        }
+
+        if let Some(v) = &state.vector {
+            let event = json! ({
+                "env": ENV.get().unwrap(),
+                "hostname": HOSTNAME.get().unwrap(),
+                "timestamp": timestamp.unix_timestamp(),
+                "conn_id": conn_id,
+                "request_id": request_id,
+                "tls_version": tls_version,
+                "tls_cipher": tls_cipher,
+                "tls_handshake": tls_handshake.as_secs_f64(),
+                "http_version": http_version,
+                "authority": authority,
+                "method": method,
+                "path": path,
+                "query": query,
+                "status": meta.status.as_u16(),
+                "duration": meta.duration,
+                "backend": meta.backend,
+                "remote_addr": remote_addr,
+                "request_size": request_size,
+                "response_size": meta.size,
+            });
+
+            v.send(event);
+        }
+    });
 
     // Execute the request
     let start = Instant::now();
@@ -114,84 +218,15 @@ pub async fn middleware(
         .exact()
         .map(|x| x as i64)
         .unwrap_or(-1);
-    let request_id = response
-        .extensions_mut()
-        .remove::<RequestId>()
-        .map(|x| x.to_string())
-        .unwrap_or_default();
     let status = response.status();
-    let conn_id = conn_info.id.to_string();
 
-    let (tls_version, tls_cipher, tls_handshake) =
-        tls_info.as_ref().map_or(("", "", Duration::ZERO), |x| {
-            (
-                x.protocol.as_str().unwrap(),
-                x.cipher.as_str().unwrap(),
-                x.handshake_dur,
-            )
-        });
-
-    let labels = &[
-        tls_version,
-        method,
-        http_version,
-        status.as_str(),
-        backend.as_str(),
-    ];
-
-    state.metrics.requests.with_label_values(labels).inc();
-    state
-        .metrics
-        .duration
-        .with_label_values(labels)
-        .observe(duration);
-
-    if state.log_requests {
-        info!(
-            request_id,
-            conn_id,
-            tls_version,
-            tls_cipher,
-            tls_handshake = tls_handshake.as_secs_f64(),
-            http_version,
-            authority,
-            method,
-            path,
-            query,
-            remote_addr,
-            status = status.as_str(),
-            duration,
-            backend,
-            request_size,
-            response_size,
-        )
-    }
-
-    if let Some(v) = &state.vector {
-        let event = json! ({
-            "env": ENV.get().unwrap(),
-            "hostname": HOSTNAME.get().unwrap(),
-            "timestamp": timestamp.unix_timestamp(),
-            "conn_id": conn_id,
-            "request_id": request_id,
-            "tls_version": tls_version,
-            "tls_cipher": tls_cipher,
-            "tls_handshake": tls_handshake.as_secs_f64(),
-            "http_version": http_version,
-            "authority": authority,
-            "method": method,
-            "path": path,
-            "query": query,
-            "status": status.as_u16(),
-            "duration": duration,
-            "backend": backend,
-            "remote_addr": remote_addr,
-            "request_size": request_size,
-            "response_size": response_size,
-        });
-
-        v.send(event);
-    }
+    // Send the meta to the logging task
+    let _ = tx.send(ResponseMeta {
+        backend,
+        status,
+        size: response_size,
+        duration,
+    });
 
     response
 }
