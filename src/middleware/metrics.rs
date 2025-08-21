@@ -72,6 +72,7 @@ struct ResponseMeta {
     duration: f64,
     backend: String,
     size: i64,
+    retries: u8,
 }
 
 impl Default for ResponseMeta {
@@ -81,6 +82,7 @@ impl Default for ResponseMeta {
             duration: 0.0,
             backend: "unknown".into(),
             size: 0,
+            retries: 0,
         }
     }
 }
@@ -146,6 +148,7 @@ pub async fn middleware(
             http_version,
             meta.status.as_str(),
             meta.backend.as_str(),
+            if meta.retries > 0 { "yes" } else { "no" },
         ];
 
         state.metrics.requests.with_label_values(labels).inc();
@@ -173,6 +176,7 @@ pub async fn middleware(
                 backend = meta.backend,
                 request_size,
                 response_size = meta.size,
+                retries = meta.retries,
             )
         }
 
@@ -197,6 +201,7 @@ pub async fn middleware(
                 "remote_addr": remote_addr,
                 "request_size": request_size,
                 "response_size": meta.size,
+                "retries": meta.retries,
             });
 
             v.send(event);
@@ -219,6 +224,11 @@ pub async fn middleware(
         .exact()
         .map(|x| x as i64)
         .unwrap_or(-1);
+    let retries = response
+        .extensions_mut()
+        .remove::<Retries>()
+        .map(|x| x.0)
+        .unwrap_or_default();
     let status = response.status();
 
     // Send the meta to the logging task
@@ -227,6 +237,7 @@ pub async fn middleware(
         status,
         size: response_size,
         duration,
+        retries,
     });
 
     response
