@@ -31,6 +31,7 @@ use crate::{
     backend::Backend,
     core::{ENV, HOSTNAME},
     middleware::request_id::RequestId,
+    routing::Retries,
 };
 
 pub const HTTP_DURATION_BUCKETS: &[f64] = &[0.05, 0.2, 1.0, 2.0];
@@ -43,7 +44,7 @@ pub struct Metrics {
 
 impl Metrics {
     pub fn new(registry: &Registry) -> Self {
-        const LABELS_HTTP: &[&str] = &["tls", "method", "http", "status", "backend"];
+        const LABELS_HTTP: &[&str] = &["tls", "method", "http", "status", "backend", "retried"];
 
         Self {
             requests: register_int_counter_vec_with_registry!(

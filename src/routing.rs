@@ -32,6 +32,9 @@ use crate::{
     },
 };
 
+#[derive(Clone, Debug)]
+pub struct Retries(pub u8);
+
 #[derive(Debug, new)]
 pub struct HandlerState {
     backend_manager: Arc<BackendManager>,
@@ -77,7 +80,7 @@ pub async fn handler(
     let mut retries = state.retry_attempts;
     let mut delay = state.retry_interval;
 
-    loop {
+    let mut response = loop {
         let body = Body::new(body.clone());
         let request = Request::from_parts(parts.clone(), body);
 
@@ -92,14 +95,22 @@ pub async fn handler(
                 delay *= 2;
                 format!("Error: {e:#}")
             }
-            Ok(v) => break v,
+            Ok(v) => {
+                break v;
+            }
         };
 
         retries -= 1;
         if retries == 0 {
             break (StatusCode::SERVICE_UNAVAILABLE, error).into_response();
         }
-    }
+    };
+
+    response
+        .extensions_mut()
+        .insert(Retries(state.retry_attempts - retries));
+
+    response
 }
 
 /// Creates top-level Axum Router
