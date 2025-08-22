@@ -200,7 +200,7 @@ impl BackendManager {
         };
 
         // Get the old BackendRouter
-        let router_old = self.backend_router.load_full();
+        let router_old = router.load_full();
 
         // Install the new one
         router.store(router_new);
