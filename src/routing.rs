@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
-use anyhow::{Error, anyhow, bail};
+use anyhow::{Error, anyhow};
 use axum::{
     Router,
     body::Body,
@@ -51,6 +51,7 @@ pub struct HandlerState {
     retry_interval_no_healthy_nodes: Duration,
 }
 
+/// Buffers the request body
 async fn buffer_request(
     state: &HandlerState,
     request: Request,
@@ -76,7 +77,8 @@ async fn buffer_request(
     Ok((parts, body))
 }
 
-async fn buffer_response(state: &HandlerState, response: Response) -> Result<Response, Error> {
+/// Buffers the response body
+async fn buffer_response(state: &HandlerState, response: Response) -> Response {
     // Buffer the response
     let (parts, body) = response.into_parts();
     let backend = REQUEST_CONTEXT
@@ -89,24 +91,30 @@ async fn buffer_response(state: &HandlerState, response: Response) -> Result<Res
     let body = Limited::new(body, state.response_body_size_limit);
 
     let Ok(body) = timeout(state.response_body_timeout, body.collect()).await else {
-        let err = format!("Timed out reading response body from backend '{backend}'");
-        info!(err);
-        bail!(err);
+        info!("Timed out reading response body from backend '{backend}'");
+        return (
+            StatusCode::GATEWAY_TIMEOUT,
+            "Timed out reading response body from the backend",
+        )
+            .into_response();
     };
 
     let body = match body {
         Ok(v) => Body::from(v.to_bytes()),
         Err(e) => {
-            let err = format!(
+            info!(
                 "Unable to read response body from backend '{backend}': {:#}",
                 anyhow!(e)
             );
-            info!(err);
-            bail!(err);
+            return (
+                StatusCode::BAD_GATEWAY,
+                "Error reading response body from the backend",
+            )
+                .into_response();
         }
     };
 
-    Ok(Response::from_parts(parts, body))
+    Response::from_parts(parts, body)
 }
 
 pub async fn handler(
@@ -132,7 +140,7 @@ pub async fn handler(
             Err(BackendRouterError::Inner(e)) => {
                 info!("Unable to execute the request: {:#}", anyhow!(e));
                 (
-                    StatusCode::SERVICE_UNAVAILABLE,
+                    StatusCode::BAD_GATEWAY,
                     "Unable to execute the request to the backend",
                 )
                     .into_response()
@@ -140,19 +148,16 @@ pub async fn handler(
             Ok(v) => v,
         };
 
-        return match buffer_response(&state, response).await {
-            Ok(v) => v,
-            Err(_) => (
-                StatusCode::BAD_GATEWAY,
-                "Unable to buffer the response from the backend",
-            )
-                .into_response(),
-        };
+        if !state.response_body_buffer {
+            return response;
+        }
+
+        return buffer_response(&state, response).await;
     }
 
     // Buffer the request body
     let Ok((parts, body)) = buffer_request(&state, request).await else {
-        return (StatusCode::SERVICE_UNAVAILABLE, "Unable to buffer body").into_response();
+        return (StatusCode::REQUEST_TIMEOUT, "Unable to buffer body").into_response();
     };
 
     let mut retries = state.retry_attempts;
@@ -194,14 +199,7 @@ pub async fn handler(
         return response;
     }
 
-    match buffer_response(&state, response).await {
-        Ok(v) => v,
-        Err(_) => (
-            StatusCode::BAD_GATEWAY,
-            "Unable to buffer the response from the backend",
-        )
-            .into_response(),
-    }
+    buffer_response(&state, response).await
 }
 
 /// Creates top-level Axum Router
