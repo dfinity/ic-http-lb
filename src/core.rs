@@ -1,11 +1,11 @@
 use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Error};
-use axum::Router;
+use axum::{Router, body::Body};
 use ic_bn_lib::{
     http::{
-        self as bnhttp, HyperClientLeastLoaded, ReqwestClient, ServerBuilder, dns,
-        redirect_to_https,
+        self as bnhttp, ClientHttp, HyperClient, HyperClientLeastLoaded, ReqwestClient,
+        ServerBuilder, dns, redirect_to_https,
     },
     rustls,
     tasks::TaskManager,
@@ -69,12 +69,16 @@ pub async fn main(
             .context("unable to setup HTTP client")?,
     );
 
-    let http_client = Arc::new(HyperClientLeastLoaded::new(
-        http_client_opts,
-        resolver,
-        cli.network.network_http_client_count as usize,
-        Some(&registry),
-    ));
+    let http_client: Arc<dyn ClientHttp<Body>> = if cli.network.network_http_client_count > 1 {
+        Arc::new(HyperClientLeastLoaded::new(
+            http_client_opts,
+            resolver,
+            cli.network.network_http_client_count as usize,
+            Some(&registry),
+        ))
+    } else {
+        Arc::new(HyperClient::new(http_client_opts, resolver))
+    };
 
     // Setup Vector
     let vector = cli.log.vector.log_vector_url.as_ref().map(|_| {

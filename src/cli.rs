@@ -90,6 +90,15 @@ pub struct Network {
     /// *** Dangerous *** - use only for testing.
     #[clap(env, long)]
     pub network_http_client_insecure_bypass_tls_verification: bool,
+
+    /// Whether to buffer request body from the client before sending it to the backend.
+    /// If `retry_attempts` is >1 then this is implicitly enabled.
+    #[clap(env, long)]
+    pub network_request_body_buffer: bool,
+
+    /// Whether to buffer response body from the backend before sending it to the client.
+    #[clap(env, long)]
+    pub network_response_body_buffer: bool,
 }
 
 #[derive(Args)]
@@ -177,8 +186,8 @@ pub struct Config {
 pub struct Retry {
     /// Number of request attempts to do.
     /// Only network errors are retried, not HTTP codes.
-    /// If the number of attempts is 1 then we don't retry and don't buffer the request body.
-    #[clap(env, long, default_value = "3", value_parser = clap::value_parser!(u8).range(1..))]
+    /// If the number of attempts is 1 then we don't retry.
+    #[clap(env, long, default_value = "1", value_parser = clap::value_parser!(u8).range(1..))]
     pub retry_attempts: u8,
 
     /// Initial retry interval, with each retry it is doubled.
@@ -190,13 +199,21 @@ pub struct Retry {
 
 #[derive(Args)]
 pub struct Limits {
-    /// Maximum request body size.
+    /// Maximum request body size if buffering.
     #[clap(env, long, default_value = "10MB", value_parser = parse_size_usize)]
     pub limits_request_body_size: usize,
 
-    /// Maximum time allowed to send the request body.
+    /// Maximum time allowed to buffer the request body.
     #[clap(env, long, default_value = "30s", value_parser = parse_duration)]
     pub limits_request_body_timeout: Duration,
+
+    /// Maximum response body size if buffering.
+    #[clap(env, long, default_value = "30MB", value_parser = parse_size_usize)]
+    pub limits_response_body_size: usize,
+
+    /// Maximum time allowed to buffer the response body.
+    #[clap(env, long, default_value = "60s", value_parser = parse_duration)]
+    pub limits_response_body_timeout: Duration,
 }
 
 #[derive(Args)]

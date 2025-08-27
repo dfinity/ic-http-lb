@@ -1,4 +1,5 @@
 use std::{
+    cell::RefCell,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -28,7 +29,7 @@ use tokio::sync::oneshot;
 use tracing::info;
 
 use crate::{
-    backend::Backend,
+    backend::{REQUEST_CONTEXT, RequestContext},
     core::{ENV, HOSTNAME},
     middleware::request_id::RequestId,
     routing::Retries,
@@ -210,14 +211,19 @@ pub async fn middleware(
 
     // Execute the request
     let start = Instant::now();
-    let mut response = next.run(request).await;
+    let (mut response, ctx) = REQUEST_CONTEXT
+        .scope(RefCell::new(RequestContext::default()), async {
+            let r = next.run(request).await;
+            let ctx = REQUEST_CONTEXT.try_with(|x| x.clone()).unwrap_or_default();
+            (r, ctx.into_inner())
+        })
+        .await;
     let duration = start.elapsed().as_secs_f64();
 
-    let backend = response
-        .extensions_mut()
-        .remove::<Arc<Backend>>()
+    let backend = ctx
+        .backend
         .map(|x| x.name.clone())
-        .unwrap_or_default();
+        .unwrap_or_else(|| "unknown".into());
     let response_size = response
         .body()
         .size_hint()

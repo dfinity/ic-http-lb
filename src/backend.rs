@@ -1,4 +1,4 @@
-use std::{fmt::Display, path::PathBuf, sync::Arc, time::Duration};
+use std::{cell::RefCell, fmt::Display, path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{Context, Error, anyhow, bail};
 use arc_swap::ArcSwapOption;
@@ -22,6 +22,7 @@ use tokio::{
     fs, select,
     signal::unix::{SignalKind, signal},
     sync::{Mutex, MutexGuard},
+    task_local,
     time::timeout,
 };
 use tokio_util::sync::CancellationToken;
@@ -29,6 +30,16 @@ use tracing::{info, warn};
 use url::Url;
 
 pub type LBBackendRouter = BackendRouter<Arc<Backend>, Request, Response, ic_bn_lib::http::Error>;
+
+task_local! {
+    pub static REQUEST_CONTEXT: RefCell<RequestContext>;
+}
+
+/// Request context information
+#[derive(Debug, Clone, Default)]
+pub struct RequestContext {
+    pub backend: Option<Arc<Backend>>,
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct Config {
@@ -419,6 +430,11 @@ impl ExecutesRequest<Arc<Backend>> for RequestExecutor {
         backend: &Arc<Backend>,
         mut req: Self::Request,
     ) -> Result<Self::Response, Self::Error> {
+        // Store the selected backend in the request context
+        let _ = REQUEST_CONTEXT.try_with(|x| {
+            x.borrow_mut().backend = Some(backend.clone());
+        });
+
         let uri = match Uri::builder()
             .scheme(backend.url.scheme())
             .authority(backend.url.authority())
@@ -452,16 +468,6 @@ impl ExecutesRequest<Arc<Backend>> for RequestExecutor {
         strip_connection_headers(req.headers_mut());
 
         // Execute it
-        let result = self.client.execute(req).await.map(|mut x| {
-            // Insert the backend into the response for observability
-            x.extensions_mut().insert(backend.clone());
-            x
-        });
-
-        if let Err(e) = &result {
-            warn!("Unable to execute request: {e:#}");
-        }
-
-        result
+        self.client.execute(req).await
     }
 }

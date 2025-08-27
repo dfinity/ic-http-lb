@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
-use anyhow::Error;
+use anyhow::{Error, anyhow, bail};
 use axum::{
     Router,
     body::Body,
@@ -12,19 +12,20 @@ use axum::{
 use axum_extra::extract::Host;
 use bytes::Bytes;
 use derive_new::new;
-use http::{HeaderValue, StatusCode};
-use http_body_util::Full;
+use http::{HeaderValue, StatusCode, request::Parts};
+use http_body_util::{BodyExt, Full, Limited};
 use ic_bn_lib::{
     http::{body::buffer_body, extract_host, headers::X_FORWARDED_HOST},
     utils::backend_router::Error as BackendRouterError,
     vector::client::Vector,
 };
 use prometheus::Registry;
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 use tower::ServiceExt;
+use tracing::{info, warn};
 
 use crate::{
-    backend::BackendManager,
+    backend::{BackendManager, REQUEST_CONTEXT},
     cli::Cli,
     middleware::{
         self,
@@ -35,14 +36,77 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct Retries(pub u8);
 
+#[allow(clippy::too_many_arguments)]
 #[derive(Debug, new)]
 pub struct HandlerState {
     backend_manager: Arc<BackendManager>,
-    body_size_limit: usize,
-    body_timeout: Duration,
+    request_body_buffer: bool,
+    request_body_size_limit: usize,
+    request_body_timeout: Duration,
+    response_body_buffer: bool,
+    response_body_size_limit: usize,
+    response_body_timeout: Duration,
     retry_attempts: u8,
     retry_interval: Duration,
     retry_interval_no_healthy_nodes: Duration,
+}
+
+async fn buffer_request(
+    state: &HandlerState,
+    request: Request,
+) -> Result<(Parts, Full<Bytes>), Error> {
+    // Buffer the request body
+    let (parts, body) = request.into_parts();
+    let body = match buffer_body(
+        body,
+        state.request_body_size_limit,
+        state.request_body_timeout,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            let e = anyhow!(e);
+            info!("Unable to buffer the request body: {e:#}");
+            return Err(e);
+        }
+    };
+    let body = Full::new(body);
+
+    Ok((parts, body))
+}
+
+async fn buffer_response(state: &HandlerState, response: Response) -> Result<Response, Error> {
+    // Buffer the response
+    let (parts, body) = response.into_parts();
+    let backend = REQUEST_CONTEXT
+        .try_with(|x| x.clone())
+        .unwrap_or_default()
+        .into_inner()
+        .backend
+        .map(|x| x.name.clone())
+        .unwrap_or_else(|| "unknown".into());
+    let body = Limited::new(body, state.response_body_size_limit);
+
+    let Ok(body) = timeout(state.response_body_timeout, body.collect()).await else {
+        let err = format!("Timed out reading response body from backend '{backend}'");
+        info!(err);
+        bail!(err);
+    };
+
+    let body = match body {
+        Ok(v) => Body::from(v.to_bytes()),
+        Err(e) => {
+            let err = format!(
+                "Unable to read response body from backend '{backend}': {:#}",
+                anyhow!(e)
+            );
+            info!(err);
+            bail!(err);
+        }
+    };
+
+    Ok(Response::from_parts(parts, body))
 }
 
 pub async fn handler(
@@ -59,23 +123,37 @@ pub async fn handler(
         HeaderValue::from_maybe_shared(Bytes::from(host)).unwrap(),
     );
 
-    // Don't buffer the body if no retries are planned
-    if state.retry_attempts == 1 {
-        return match backend_router.execute(request).await {
+    // Don't buffer the body if no retries are planned and not requested to do it
+    if state.retry_attempts == 1 && !state.request_body_buffer {
+        let response = match backend_router.execute(request).await {
             Err(BackendRouterError::NoHealthyNodes) => {
                 "No healthy HTTP gateways available".into_response()
             }
-            Err(BackendRouterError::Inner(e)) => format!("Error: {e:#}").into_response(),
+            Err(BackendRouterError::Inner(e)) => {
+                info!("Unable to execute the request: {:#}", anyhow!(e));
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Unable to execute the request to the backend",
+                )
+                    .into_response()
+            }
             Ok(v) => v,
+        };
+
+        return match buffer_response(&state, response).await {
+            Ok(v) => v,
+            Err(_) => (
+                StatusCode::BAD_GATEWAY,
+                "Unable to buffer the response from the backend",
+            )
+                .into_response(),
         };
     }
 
     // Buffer the request body
-    let (parts, body) = request.into_parts();
-    let Ok(body) = buffer_body(body, state.body_size_limit, state.body_timeout).await else {
+    let Ok((parts, body)) = buffer_request(&state, request).await else {
         return (StatusCode::SERVICE_UNAVAILABLE, "Unable to buffer body").into_response();
     };
-    let body = Full::new(body);
 
     let mut retries = state.retry_attempts;
     let mut delay = state.retry_interval;
@@ -84,16 +162,17 @@ pub async fn handler(
         let body = Body::new(body.clone());
         let request = Request::from_parts(parts.clone(), body);
 
-        let resp = backend_router.execute(request).await;
-        let error = match resp {
+        let error = match backend_router.execute(request).await {
             Err(BackendRouterError::NoHealthyNodes) => {
                 sleep(state.retry_interval_no_healthy_nodes).await;
                 "No healthy HTTP gateways available".into()
             }
             Err(BackendRouterError::Inner(e)) => {
+                let e = format!("Error: {:#}", anyhow!(e));
+                warn!("{e}");
                 sleep(delay).await;
                 delay *= 2;
-                format!("Error: {e:#}")
+                e
             }
             Ok(v) => {
                 break v;
@@ -102,7 +181,7 @@ pub async fn handler(
 
         retries -= 1;
         if retries == 0 {
-            break (StatusCode::SERVICE_UNAVAILABLE, error).into_response();
+            return (StatusCode::SERVICE_UNAVAILABLE, error).into_response();
         }
     };
 
@@ -110,7 +189,19 @@ pub async fn handler(
         .extensions_mut()
         .insert(Retries(state.retry_attempts - retries));
 
-    response
+    // Don't buffer the response body if not configured
+    if !state.response_body_buffer {
+        return response;
+    }
+
+    match buffer_response(&state, response).await {
+        Ok(v) => v,
+        Err(_) => (
+            StatusCode::BAD_GATEWAY,
+            "Unable to buffer the response from the backend",
+        )
+            .into_response(),
+    }
 }
 
 /// Creates top-level Axum Router
@@ -123,8 +214,12 @@ pub fn setup_axum_router(
 ) -> Result<Router, Error> {
     let state = Arc::new(HandlerState::new(
         backend_manager,
+        cli.network.network_request_body_buffer,
         cli.limits.limits_request_body_size,
         cli.limits.limits_request_body_timeout,
+        cli.network.network_response_body_buffer,
+        cli.limits.limits_response_body_size,
+        cli.limits.limits_response_body_timeout,
         cli.retry.retry_attempts,
         cli.retry.retry_interval,
         cli.health.health_check_interval.div_f64(4.0),
