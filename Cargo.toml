@@ -37,7 +37,7 @@ tower = { version = "0.5.1", features = ["limit"] }
 tower-http = { version = "0.6.1", features = ["cors", "compression-full"] }
 tracing = "0.1.40"
 tracing-core = "0.1.32"
-tracing-subscriber = { version = "0.3.18", features = [
+tracing-subscriber = { version = "0.3.20", features = [
     "env-filter",
     "fmt",
     "json",
