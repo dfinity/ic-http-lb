@@ -4,7 +4,7 @@ use clap::{Args, Parser};
 use fqdn::FQDN;
 use humantime::parse_duration;
 use ic_bn_lib::{
-    http::{self, dns},
+    http::{self, dns, middleware::waf::WafCli},
     parse_size_usize,
     tls::acme::AcmeUrl,
     vector::cli::Vector,
@@ -53,7 +53,10 @@ pub struct Cli {
     #[command(flatten, next_help_heading = "Logging")]
     pub log: Log,
 
-    #[cfg(target_os = "linux")]
+    #[command(flatten, next_help_heading = "WAF")]
+    pub waf: WafCli,
+
+    #[cfg(all(target_os = "linux", feature = "sev-snp"))]
     #[command(flatten, next_help_heading = "SEV-SNP")]
     pub sev_snp: ic_bn_lib::utils::sev_snp::SevSnp,
 

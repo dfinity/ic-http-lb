@@ -5,7 +5,7 @@ use axum::{Router, body::Body};
 use ic_bn_lib::{
     http::{
         self as bnhttp, ClientHttp, HyperClient, HyperClientLeastLoaded, ReqwestClient,
-        ServerBuilder, dns, redirect_to_https,
+        ServerBuilder, dns, middleware::waf::WafLayer, redirect_to_https,
     },
     rustls,
     tasks::TaskManager,
@@ -98,10 +98,22 @@ pub async fn main(
         &registry,
     ));
 
+    // Setup WAF
+    let waf_layer = if cli.waf.waf_enable {
+        let v = WafLayer::new_from_cli(&cli.waf, Some(http_client_reqwest.clone()))
+            .context("unable to create WAF layer")?;
+
+        // Run background poller
+        tasks.add("waf", Arc::new(v.clone()));
+        Some(v)
+    } else {
+        None
+    };
+
     // Setup API router if configured
     let axum_router_api = if cli.api.api_hostname.is_some() || cli.api.api_listen.is_some() {
         Some(
-            setup_api_axum_router(cli, backend_manager.clone(), log_handle)
+            setup_api_axum_router(cli, backend_manager.clone(), log_handle, waf_layer.clone())
                 .context("unable to setup API Axum Router")?,
         )
     } else {
@@ -114,6 +126,7 @@ pub async fn main(
         backend_manager.clone(),
         vector.clone(),
         &registry,
+        waf_layer,
     )
     .context("unable to setup Axum Router")?;
 

@@ -9,13 +9,13 @@ use axum::{
     middleware::{from_fn, from_fn_with_state},
     response::{IntoResponse, Response},
 };
-use axum_extra::extract::Host;
+use axum_extra::{extract::Host, middleware::option_layer};
 use bytes::Bytes;
 use derive_new::new;
 use http::{HeaderValue, StatusCode, request::Parts};
 use http_body_util::{BodyExt, Full, Limited};
 use ic_bn_lib::{
-    http::{body::buffer_body, extract_host, headers::X_FORWARDED_HOST},
+    http::{body::buffer_body, extract_host, headers::X_FORWARDED_HOST, middleware::waf::WafLayer},
     utils::backend_router::Error as BackendRouterError,
     vector::client::Vector,
 };
@@ -209,6 +209,7 @@ pub fn setup_axum_router(
     backend_manager: Arc<BackendManager>,
     vector: Option<Arc<Vector>>,
     registry: &Registry,
+    waf_layer: Option<WafLayer>,
 ) -> Result<Router, Error> {
     let state = Arc::new(HandlerState::new(
         backend_manager,
@@ -239,6 +240,7 @@ pub fn setup_axum_router(
 
             Ok(handler.call(request, state).await)
         })
+        .layer(option_layer(waf_layer))
         .layer(from_fn(middleware::request_id::middleware))
         .layer(from_fn_with_state(
             metrics_state,

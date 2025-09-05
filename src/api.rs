@@ -11,10 +11,11 @@ use axum::{
 use bytes::Bytes;
 use derive_new::new;
 use http::{StatusCode, header::AUTHORIZATION};
+use ic_bn_lib::http::middleware::waf::{self, WafLayer};
 use tracing::{Level, warn};
 use tracing_core::LevelFilter;
 use tracing_subscriber::{Registry, reload::Handle};
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "sev-snp"))]
 use {anyhow::Context as _, axum::routing::post, ic_bn_lib::http::middleware::rate_limiter};
 
 use crate::{
@@ -161,6 +162,7 @@ pub fn setup_api_axum_router(
     cli: &Cli,
     backend_manager: Arc<BackendManager>,
     log_handle: Handle<LevelFilter, Registry>,
+    waf_layer: Option<WafLayer>,
 ) -> Result<Router, Error> {
     let state = Arc::new(ApiState::new(
         cli.api
@@ -173,7 +175,6 @@ pub fn setup_api_axum_router(
 
     let auth = from_fn_with_state(state.clone(), auth_middleware);
 
-    #[allow(unused_mut)]
     let mut router = Router::new()
         .route("/health", get(health_handler))
         .route("/log/{log_level}", get(log_handler).layer(auth.clone()))
@@ -183,10 +184,16 @@ pub fn setup_api_axum_router(
         )
         .route("/config/reload", get(config_reload).layer(auth.clone()))
         .route("/config/get", get(config_get).layer(auth.clone()))
-        .route("/config/put", put(config_put).layer(auth))
-        .with_state(state);
+        .route("/config/put", put(config_put).layer(auth.clone()));
 
-    #[cfg(target_os = "linux")]
+    if let Some(v) = waf_layer {
+        router = router.nest("/waf", waf::create_router(v).layer(auth))
+    }
+
+    #[allow(unused_mut)]
+    let mut router = router.with_state(state);
+
+    #[cfg(all(target_os = "linux", feature = "sev-snp"))]
     if cli.sev_snp.sev_snp_enable {
         router = router.route(
             "/sev-snp/report",
@@ -242,7 +249,7 @@ mod test {
         );
 
         let (_, reload_handle) = reload::Layer::new(LevelFilter::WARN);
-        let router = setup_api_axum_router(&cli, Arc::new(bm), reload_handle).unwrap();
+        let router = setup_api_axum_router(&cli, Arc::new(bm), reload_handle, None).unwrap();
 
         // Bad header
         let mut req = Request::builder()
@@ -304,7 +311,7 @@ mod test {
         );
 
         let (_, reload_handle) = reload::Layer::new(LevelFilter::WARN);
-        let router = setup_api_axum_router(&cli, Arc::new(bm), reload_handle).unwrap();
+        let router = setup_api_axum_router(&cli, Arc::new(bm), reload_handle, None).unwrap();
 
         // Upload config
         let config = include_bytes!("../config.yaml").as_slice();
