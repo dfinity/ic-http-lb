@@ -190,7 +190,8 @@ pub fn setup_api_axum_router(
         router = router.nest("/waf", waf::create_router(v).layer(auth))
     }
 
-    let router = router.with_state(state);
+    #[allow(unused_mut)]
+    let mut router = router.with_state(state);
 
     #[cfg(all(target_os = "linux", feature = "sev-snp"))]
     if cli.sev_snp.sev_snp_enable {
