@@ -1,3 +1,3 @@
 #!/bin/bash
 
-cargo test-all-features --all-features --profile dev --workspace -- --nocapture
+cargo test-all-features
