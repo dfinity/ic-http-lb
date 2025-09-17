@@ -21,7 +21,7 @@ use ic_bn_lib::{
 };
 use prometheus::Registry;
 use tokio::time::{sleep, timeout};
-use tower::ServiceExt;
+use tower::{ServiceBuilder, ServiceExt};
 use tracing::{info, warn};
 
 use crate::{
@@ -226,9 +226,22 @@ pub fn setup_axum_router(
 
     let api_hostname = cli.api.api_hostname.clone().map(|x| x.to_string());
     let metrics = Metrics::new(registry);
-    let metrics_state = Arc::new(MetricsState::new(vector, metrics, cli.log.log_requests));
+    let metrics_state = Arc::new(MetricsState::new(
+        vector,
+        metrics,
+        cli.log.log_requests,
+        cli.log.log_requests_long,
+    ));
 
-    Ok(Router::new()
+    let middlewares = ServiceBuilder::new()
+        .layer(from_fn(middleware::request_id::middleware))
+        .layer(from_fn_with_state(
+            metrics_state,
+            middleware::metrics::middleware,
+        ))
+        .layer(option_layer(waf_layer));
+
+    let router = Router::new()
         .fallback(|Host(host): Host, request: Request| async move {
             // See if we have API enabled
             if let Some(v) = router_api {
@@ -240,10 +253,7 @@ pub fn setup_axum_router(
 
             Ok(handler.call(request, state).await)
         })
-        .layer(option_layer(waf_layer))
-        .layer(from_fn(middleware::request_id::middleware))
-        .layer(from_fn_with_state(
-            metrics_state,
-            middleware::metrics::middleware,
-        )))
+        .layer(middlewares);
+
+    Ok(router)
 }
