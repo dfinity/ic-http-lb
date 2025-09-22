@@ -238,7 +238,7 @@ pub struct Log {
     /// Log requests that take longer than this to complete at WARN level.
     /// This works independently of `--log-requests` and raises the log level from INFO to WARN if
     /// the request duration exceeds this.
-    #[clap(env, long, default_value = "60s", value_parser = parse_duration)]
+    #[clap(env, long, value_parser = parse_duration)]
     pub log_requests_long: Option<Duration>,
 
     #[command(flatten, next_help_heading = "Vector")]
