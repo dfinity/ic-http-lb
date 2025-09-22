@@ -15,6 +15,7 @@ use bytes::Bytes;
 use derive_new::new;
 use http::{HeaderValue, StatusCode};
 use ic_bn_lib::{
+    dyn_event,
     http::{
         ConnInfo, extract_authority, headers::X_REAL_IP, http_method, http_version, server::TlsInfo,
     },
@@ -26,7 +27,7 @@ use prometheus::{
 };
 use serde_json::json;
 use tokio::sync::oneshot;
-use tracing::info;
+use tracing::Level;
 
 use crate::{
     backend::{REQUEST_CONTEXT, RequestContext},
@@ -93,6 +94,7 @@ pub struct MetricsState {
     vector: Option<Arc<Vector>>,
     metrics: Metrics,
     log_requests: bool,
+    log_requests_long: Option<Duration>,
 }
 
 pub async fn middleware(
@@ -159,8 +161,20 @@ pub async fn middleware(
             .with_label_values(labels)
             .observe(meta.duration);
 
-        if state.log_requests {
-            info!(
+        // Log the request if conditions are met
+        let log_level = if let Some(v) = state.log_requests_long
+            && meta.duration >= v.as_secs_f64()
+        {
+            Some(Level::WARN)
+        } else if state.log_requests {
+            Some(Level::INFO)
+        } else {
+            None
+        };
+
+        if let Some(v) = log_level {
+            dyn_event!(
+                v,
                 request_id,
                 conn_id,
                 tls_version,
@@ -178,7 +192,7 @@ pub async fn middleware(
                 request_size,
                 response_size = meta.size,
                 retries = meta.retries,
-            )
+            );
         }
 
         if let Some(v) = &state.vector {

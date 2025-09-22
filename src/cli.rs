@@ -229,11 +229,17 @@ pub struct Log {
     #[clap(env, long)]
     pub log_stdout: bool,
 
-    /// Enables logging of HTTP requests to stdout.
-    /// This does not affect Vector logging -
+    /// Enables logging of all HTTP requests to stdout at INFO level.
+    /// This does not affect Vector logging,
     /// if it's enabled then it will log in any case.
     #[clap(env, long)]
     pub log_requests: bool,
+
+    /// Log requests that take longer than this to complete at WARN level.
+    /// This works independently of `--log-requests` and raises the log level from INFO to WARN if
+    /// the request duration exceeds this.
+    #[clap(env, long, value_parser = parse_duration)]
+    pub log_requests_long: Option<Duration>,
 
     #[command(flatten, next_help_heading = "Vector")]
     pub vector: Vector,
