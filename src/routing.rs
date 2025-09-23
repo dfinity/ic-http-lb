@@ -132,6 +132,11 @@ async fn buffer_response(state: &HandlerState, response: Response) -> Response {
         }
     };
 
+    // Store the flag for the metrics
+    let _ = REQUEST_CONTEXT.try_with(|x| {
+        x.borrow_mut().response_body_buffered = true;
+    });
+
     Response::from_parts(parts, body)
 }
 
@@ -188,6 +193,11 @@ pub async fn handler(
     let Ok((parts, body)) = buffer_request(&state, request).await else {
         return (StatusCode::REQUEST_TIMEOUT, "Unable to buffer body").into_response();
     };
+
+    // Store the flag for the metrics
+    let _ = REQUEST_CONTEXT.try_with(|x| {
+        x.borrow_mut().request_body_buffered = true;
+    });
 
     let mut retries = state.retry_attempts;
     let mut delay = state.retry_interval;

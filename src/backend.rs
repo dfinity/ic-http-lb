@@ -39,6 +39,8 @@ task_local! {
 #[derive(Debug, Clone, Default)]
 pub struct RequestContext {
     pub backend: Option<Arc<Backend>>,
+    pub request_body_buffered: bool,
+    pub response_body_buffered: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
