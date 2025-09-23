@@ -96,10 +96,12 @@ pub struct Network {
 
     /// Whether to buffer request body from the client before sending it to the backend.
     /// If `retry_attempts` is >1 then this is implicitly enabled.
+    /// The body is buffered only if it's size is known and smaller than `--limits-request-body-size`
     #[clap(env, long)]
     pub network_request_body_buffer: bool,
 
     /// Whether to buffer response body from the backend before sending it to the client.
+    /// The body is buffered only if it's size is known and smaller than `--limits-response-body-size`
     #[clap(env, long)]
     pub network_response_body_buffer: bool,
 }

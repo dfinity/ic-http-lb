@@ -3,7 +3,7 @@ use std::{sync::Arc, time::Duration};
 use anyhow::{Error, anyhow};
 use axum::{
     Router,
-    body::Body,
+    body::{Body, HttpBody as _},
     extract::{Request, State},
     handler::Handler,
     middleware::{from_fn, from_fn_with_state},
@@ -79,6 +79,24 @@ async fn buffer_request(
 
 /// Buffers the response body
 async fn buffer_response(state: &HandlerState, response: Response) -> Response {
+    // Return the response as-is if no buffering was requested
+    if !state.response_body_buffer {
+        return response;
+    }
+
+    // Check if the response body size is known and it is small enough
+    let body_bufferable = response
+        .body()
+        .size_hint()
+        .exact()
+        .map(|x| x <= state.response_body_size_limit as u64)
+        == Some(true);
+
+    // Return the response as-is if the body isn't bufferable
+    if !body_bufferable {
+        return response;
+    }
+
     // Buffer the response
     let (parts, body) = response.into_parts();
     let backend = REQUEST_CONTEXT
@@ -131,8 +149,23 @@ pub async fn handler(
         HeaderValue::from_maybe_shared(Bytes::from(host)).unwrap(),
     );
 
-    // Don't buffer the body if no retries are planned and not requested to do it
-    if state.retry_attempts == 1 && !state.request_body_buffer {
+    // Check if the request body size is known and it is small enough
+    let request_body_bufferable = request
+        .body()
+        .size_hint()
+        .exact()
+        .map(|x| x <= state.request_body_size_limit as u64)
+        == Some(true);
+
+    // Buffer the request body only if:
+    // - It is bufferable, and:
+    //   * We want to do retries
+    //     or
+    //   * We were told to buffer it explicitly
+    let request_should_buffer =
+        request_body_bufferable && (state.retry_attempts > 1 || state.request_body_buffer);
+
+    if !request_should_buffer {
         let response = match backend_router.execute(request).await {
             Err(BackendRouterError::NoHealthyNodes) => {
                 "No healthy HTTP gateways available".into_response()
@@ -147,10 +180,6 @@ pub async fn handler(
             }
             Ok(v) => v,
         };
-
-        if !state.response_body_buffer {
-            return response;
-        }
 
         return buffer_response(&state, response).await;
     }
@@ -193,11 +222,6 @@ pub async fn handler(
     response
         .extensions_mut()
         .insert(Retries(state.retry_attempts - retries));
-
-    // Don't buffer the response body if not configured
-    if !state.response_body_buffer {
-        return response;
-    }
 
     buffer_response(&state, response).await
 }
