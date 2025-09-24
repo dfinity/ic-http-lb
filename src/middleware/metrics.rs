@@ -70,9 +70,9 @@ impl Metrics {
 }
 
 struct ResponseMeta {
+    ctx: RequestContext,
     status: StatusCode,
     duration: f64,
-    backend: String,
     size: i64,
     retries: u8,
 }
@@ -80,9 +80,9 @@ struct ResponseMeta {
 impl Default for ResponseMeta {
     fn default() -> Self {
         Self {
+            ctx: RequestContext::default(),
             status: StatusCode::REQUEST_TIMEOUT,
             duration: 0.0,
-            backend: "unknown".into(),
             size: 0,
             retries: 0,
         }
@@ -145,12 +145,18 @@ pub async fn middleware(
         // If the future is cancelled then TX will be dropped and we'll get a default value
         let meta: ResponseMeta = rx.await.unwrap_or_default();
 
+        let backend = meta
+            .ctx
+            .backend
+            .map(|x| x.name.clone())
+            .unwrap_or_else(|| "unknown".into());
+
         let labels = &[
             tls_version,
             method,
             http_version,
             meta.status.as_str(),
-            meta.backend.as_str(),
+            backend.as_str(),
             if meta.retries > 0 { "yes" } else { "no" },
         ];
 
@@ -188,9 +194,11 @@ pub async fn middleware(
                 remote_addr,
                 status = meta.status.as_str(),
                 duration = meta.duration,
-                backend = meta.backend,
+                backend,
                 request_size,
+                request_body_buffered = meta.ctx.request_body_buffered,
                 response_size = meta.size,
+                response_body_buffered = meta.ctx.response_body_buffered,
                 retries = meta.retries,
             );
         }
@@ -212,9 +220,11 @@ pub async fn middleware(
                 "query": query,
                 "status": meta.status.as_u16(),
                 "duration": meta.duration,
-                "backend": meta.backend,
+                "backend": backend,
                 "remote_addr": remote_addr,
+                "request_body_buffered": meta.ctx.request_body_buffered,
                 "request_size": request_size,
+                "response_body_buffered": meta.ctx.response_body_buffered,
                 "response_size": meta.size,
                 "retries": meta.retries,
             });
@@ -234,10 +244,6 @@ pub async fn middleware(
         .await;
     let duration = start.elapsed().as_secs_f64();
 
-    let backend = ctx
-        .backend
-        .map(|x| x.name.clone())
-        .unwrap_or_else(|| "unknown".into());
     let response_size = response
         .body()
         .size_hint()
@@ -253,7 +259,7 @@ pub async fn middleware(
 
     // Send the meta to the logging task
     let _ = tx.send(ResponseMeta {
-        backend,
+        ctx,
         status,
         size: response_size,
         duration,
