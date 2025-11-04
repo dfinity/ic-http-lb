@@ -212,6 +212,7 @@ pub fn setup_api_axum_router(
                         StatusCode::TOO_MANY_REQUESTS,
                         "Too many requests, try again later",
                     ),
+                    None,
                 )?),
         );
     }

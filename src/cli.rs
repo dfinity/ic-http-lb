@@ -47,6 +47,9 @@ pub struct Cli {
     #[command(flatten, next_help_heading = "DNS")]
     pub dns: dns::cli::Dns,
 
+    #[command(flatten, next_help_heading = "Custom Domains")]
+    pub custom_domains: Option<custom_domains_base::cli::CustomDomainsCli>,
+
     #[command(flatten, next_help_heading = "Certificates")]
     pub cert: Cert,
 

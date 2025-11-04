@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use anyhow::{Error, bail};
 use ic_bn_lib::{
-    http::{ALPN_ACME, Client},
+    http::{ALPN_ACME, Client, dns},
     rustls::{
         server::{ResolvesServerCert, ServerConfig},
         version::{TLS12, TLS13},
@@ -18,7 +18,7 @@ use ic_bn_lib::{
 };
 use prometheus::Registry;
 
-use crate::cli::Cli;
+use crate::{cli::Cli, core::HOSTNAME};
 
 // Prepares the stuff needed for serving TLS
 pub async fn setup(
@@ -61,6 +61,11 @@ pub async fn setup(
     // Create Dir providers
     for v in &cli.cert.cert_provider_dir {
         cert_providers.push(Arc::new(providers::Dir::new(v.clone())));
+    }
+
+    // Create Custom Domains provider
+    if let Some(v) = &cli.custom_domains {
+        setup_custom_domains(v, (&cli.dns).into(), registry, tasks, &mut cert_providers).await?;
     }
 
     if cert_providers.is_empty() {
@@ -109,4 +114,31 @@ pub async fn setup(
     let config = prepare_server_config(tls_opts, certificate_resolver, registry);
 
     Ok(config)
+}
+
+async fn setup_custom_domains(
+    cli: &custom_domains_base::cli::CustomDomainsCli,
+    dns_options: dns::Options,
+    metrics_registry: &Registry,
+    tasks: &mut TaskManager,
+    certificate_providers: &mut Vec<Arc<dyn ProvidesCertificates>>,
+) -> Result<(), Error> {
+    let token = tasks.token();
+    let (workers, _, client) = custom_domains_backend::setup(
+        cli,
+        dns_options,
+        token,
+        HOSTNAME.get().unwrap(),
+        metrics_registry.clone(),
+    )
+    .await?;
+
+    for (i, worker) in workers.into_iter().enumerate() {
+        tasks.add(&format!("custom_domains_worker_{i}"), Arc::new(worker));
+    }
+    tasks.add("custom_domains_canister_client", client.clone());
+
+    certificate_providers.push(client.clone());
+
+    Ok(())
 }
