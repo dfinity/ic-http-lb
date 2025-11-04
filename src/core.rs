@@ -64,6 +64,7 @@ pub async fn main(
     http_client_opts.tls_config = Some(http_client_tls_config);
 
     let resolver = dns::Resolver::new((&cli.dns).into());
+
     let http_client_reqwest = Arc::new(
         ReqwestClient::new(http_client_opts.clone(), Some(resolver.clone()))
             .context("unable to setup HTTP client")?,
