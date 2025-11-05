@@ -2345,6 +2345,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml_ng",
+ "tempfile",
  "tikv-jemalloc-ctl",
  "tikv-jemallocator",
  "time",
