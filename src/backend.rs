@@ -7,13 +7,20 @@ use axum::{body::Body, extract::Request, response::Response};
 use derive_new::new;
 use http::{Uri, Version, uri::PathAndQuery};
 use ic_bn_lib::{
-    http::{ClientHttp, headers::strip_connection_headers},
-    tasks::Run,
+    http::headers::strip_connection_headers,
     utils::{
         backend_router::BackendRouter,
-        distributor::{self, ExecutesRequest, Strategy},
-        health_check::{self, ChecksTarget, TargetState},
+        distributor::{self, Strategy},
+        health_check::{self},
     },
+};
+use ic_bn_lib_common::{
+    traits::{
+        Run,
+        http::ClientHttp,
+        utils::{ChecksTarget, ExecutesRequest},
+    },
+    types::{http::Error as HttpError, utils::TargetState},
 };
 use itertools::Itertools;
 use prometheus::Registry;
@@ -29,7 +36,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use url::Url;
 
-pub type LBBackendRouter = BackendRouter<Arc<Backend>, Request, Response, ic_bn_lib::http::Error>;
+pub type LBBackendRouter = BackendRouter<Arc<Backend>, Request, Response, HttpError>;
 
 task_local! {
     pub static REQUEST_CONTEXT: RefCell<RequestContext>;
@@ -425,7 +432,7 @@ pub struct RequestExecutor {
 impl ExecutesRequest<Arc<Backend>> for RequestExecutor {
     type Request = Request<Body>;
     type Response = Response<Body>;
-    type Error = ic_bn_lib::http::Error;
+    type Error = HttpError;
 
     async fn execute(
         &self,

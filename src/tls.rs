@@ -2,19 +2,21 @@ use std::sync::Arc;
 
 use anyhow::{Error, bail};
 use ic_bn_lib::{
-    http::{ALPN_ACME, Client, dns},
     rustls::{
         server::{ResolvesServerCert, ServerConfig},
         version::{TLS12, TLS13},
     },
     tasks::TaskManager,
     tls::{
-        self,
         acme::alpn::{AcmeAlpn, Opts},
         prepare_server_config,
-        providers::{self, Aggregator, Issuer, ProvidesCertificates, issuer, storage},
+        providers::{self, Aggregator, Issuer, issuer, storage},
         resolver,
     },
+};
+use ic_bn_lib_common::{
+    traits::{http::Client, tls::ProvidesCertificates},
+    types::{dns::Options as DnsOptions, http::ALPN_ACME, tls::TlsOptions},
 };
 use prometheus::Registry;
 
@@ -102,7 +104,7 @@ pub async fn setup(
         resolver::Metrics::new(registry),
     ));
 
-    let mut tls_opts: tls::Options = (&cli.http_server).into();
+    let mut tls_opts: TlsOptions = (&cli.http_server).into();
     tls_opts.tls_versions = vec![&TLS13, &TLS12];
 
     // To perform TLS-ALPN-01 validation we need to add ACME ALPN to the list
@@ -118,7 +120,7 @@ pub async fn setup(
 
 async fn setup_custom_domains(
     cli: &custom_domains_base::cli::CustomDomainsCli,
-    dns_options: dns::Options,
+    dns_options: DnsOptions,
     metrics_registry: &Registry,
     tasks: &mut TaskManager,
     certificate_providers: &mut Vec<Arc<dyn ProvidesCertificates>>,

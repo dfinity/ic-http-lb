@@ -3,11 +3,14 @@ use std::{net::SocketAddr, path::PathBuf, time::Duration};
 use clap::{Args, Parser};
 use fqdn::FQDN;
 use humantime::parse_duration;
-use ic_bn_lib::{
-    http::{self, dns, middleware::waf::WafCli},
+use ic_bn_lib_common::{
     parse_size_usize,
-    tls::acme::AcmeUrl,
-    vector::cli::Vector,
+    types::{
+        acme::AcmeUrl,
+        dns::DnsCli,
+        http::{HttpClientCli, HttpServerCli, WafCli},
+        vector::VectorCli,
+    },
 };
 use url::Url;
 
@@ -24,10 +27,10 @@ pub struct Cli {
     pub listen: Listen,
 
     #[command(flatten, next_help_heading = "HTTP Server")]
-    pub http_server: http::server::cli::HttpServer,
+    pub http_server: HttpServerCli,
 
     #[command(flatten, next_help_heading = "HTTP Client")]
-    pub http_client: http::client::cli::HttpClient,
+    pub http_client: HttpClientCli,
 
     #[command(flatten, next_help_heading = "Network")]
     pub network: Network,
@@ -45,7 +48,7 @@ pub struct Cli {
     pub health: Health,
 
     #[command(flatten, next_help_heading = "DNS")]
-    pub dns: dns::cli::Dns,
+    pub dns: DnsCli,
 
     #[command(flatten, next_help_heading = "Custom Domains")]
     pub custom_domains: Option<custom_domains_base::cli::CustomDomainsCli>,
@@ -61,7 +64,7 @@ pub struct Cli {
 
     #[cfg(all(target_os = "linux", feature = "sev-snp"))]
     #[command(flatten, next_help_heading = "SEV-SNP")]
-    pub sev_snp: ic_bn_lib::utils::sev_snp::SevSnp,
+    pub sev_snp: ic_bn_lib_common::types::utils::SevSnpCli,
 
     #[command(flatten, next_help_heading = "Misc")]
     pub misc: Misc,
@@ -247,7 +250,7 @@ pub struct Log {
     pub log_requests_long: Option<Duration>,
 
     #[command(flatten, next_help_heading = "Vector")]
-    pub vector: Vector,
+    pub vector: VectorCli,
 }
 
 #[derive(Args)]

@@ -16,11 +16,10 @@ use derive_new::new;
 use http::{HeaderValue, StatusCode};
 use ic_bn_lib::{
     dyn_event,
-    http::{
-        ConnInfo, extract_authority, headers::X_REAL_IP, http_method, http_version, server::TlsInfo,
-    },
+    http::{extract_authority, headers::X_REAL_IP, http_method, http_version},
     vector::client::Vector,
 };
+use ic_bn_lib_common::types::http::{ConnInfo, TlsInfo};
 use prometheus::{
     HistogramVec, IntCounterVec, Registry, register_histogram_vec_with_registry,
     register_int_counter_vec_with_registry,
