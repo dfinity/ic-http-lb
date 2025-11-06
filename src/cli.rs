@@ -185,7 +185,7 @@ pub struct Cert {
 
 #[derive(Args)]
 pub struct Config {
-    /// Path to the YAML file with backend configuration
+    /// Path to the YAML or JSON file with backend configuration (see `config.yaml` for an example)
     #[clap(env, long)]
     pub config_path: PathBuf,
 }
