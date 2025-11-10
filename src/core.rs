@@ -4,13 +4,17 @@ use anyhow::{Context, Error};
 use axum::{Router, body::Body};
 use ic_bn_lib::{
     http::{
-        self as bnhttp, ClientHttp, HyperClient, HyperClientLeastLoaded, ReqwestClient,
-        ServerBuilder, dns, middleware::waf::WafLayer, redirect_to_https,
+        self as bnhttp, HyperClient, HyperClientLeastLoaded, ReqwestClient, ServerBuilder, dns,
+        middleware::waf::WafLayer, redirect_to_https,
     },
     rustls,
     tasks::TaskManager,
     tls::{prepare_client_config, verify::NoopServerCertVerifier},
     vector::client::Vector,
+};
+use ic_bn_lib_common::{
+    traits::http::ClientHttp,
+    types::http::{ClientOptions, Metrics},
 };
 use prometheus::Registry;
 use tokio::{
@@ -48,7 +52,7 @@ pub async fn main(
         .context("unable to create Prometheus registry")?;
 
     // Create HTTP client to talk to the backends
-    let mut http_client_opts: bnhttp::client::Options = (&cli.http_client).into();
+    let mut http_client_opts: ClientOptions = (&cli.http_client).into();
     let mut http_client_tls_config = prepare_client_config(&[&rustls::version::TLS13]);
 
     // Disable TLS certificate verification if instructed
@@ -132,7 +136,7 @@ pub async fn main(
     .context("unable to setup Axum Router")?;
 
     // HTTP server metrics
-    let http_metrics = bnhttp::server::Metrics::new(&registry);
+    let http_metrics = Metrics::new(&registry);
 
     // Set up HTTP router (redirecting to HTTPS or serving all endpoints)
     let axum_router_http = if !cli.listen.listen_insecure_serve_http_only {

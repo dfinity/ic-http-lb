@@ -53,13 +53,11 @@ mod test {
     use clap::Parser;
     use http::StatusCode;
     use ic_bn_lib::{
-        http::{
-            Server,
-            server::{Addr, Metrics, Options},
-        },
+        http::Server,
         reqwest,
         tests::{TEST_CERT_1, TEST_KEY_1},
     };
+    use ic_bn_lib_common::types::http::{Addr, Metrics, ServerOptions};
     use prometheus::Registry;
     use serde_json::json;
     use tempfile::tempdir;
@@ -71,7 +69,7 @@ mod test {
     #[tokio::test]
     async fn test_load_balancer() {
         // Set up stub backend on a random port
-        let opts = Options::default();
+        let opts = ServerOptions::default();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
