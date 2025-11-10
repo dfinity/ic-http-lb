@@ -474,7 +474,7 @@ dependencies = [
 [[package]]
 name = "backend"
 version = "0.1.0"
-source = "git+https://github.com/dfinity/custom-domains?rev=2297d6489a77ee5dac39d440cbdff9af8979810e#2297d6489a77ee5dac39d440cbdff9af8979810e"
+source = "git+https://github.com/dfinity/custom-domains?rev=3d63b08643e71b84566f3ff428d1d4c3fc6cdcc8#3d63b08643e71b84566f3ff428d1d4c3fc6cdcc8"
 dependencies = [
  "anyhow",
  "axum",
@@ -488,7 +488,7 @@ dependencies = [
  "clap",
  "derive-new",
  "fqdn",
- "ic-bn-lib 0.1.0 (git+https://github.com/dfinity/ic-bn-lib?rev=4c1accc22cdc36f54661e593b82898f78b05b5ca)",
+ "ic-bn-lib",
  "ic-bn-lib-common",
  "prometheus",
  "serde",
@@ -516,7 +516,7 @@ dependencies = [
 [[package]]
 name = "base"
 version = "0.1.0"
-source = "git+https://github.com/dfinity/custom-domains?rev=2297d6489a77ee5dac39d440cbdff9af8979810e#2297d6489a77ee5dac39d440cbdff9af8979810e"
+source = "git+https://github.com/dfinity/custom-domains?rev=3d63b08643e71b84566f3ff428d1d4c3fc6cdcc8#3d63b08643e71b84566f3ff428d1d4c3fc6cdcc8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -530,7 +530,7 @@ dependencies = [
  "fqdn",
  "hickory-resolver",
  "humantime",
- "ic-bn-lib 0.1.0 (git+https://github.com/dfinity/ic-bn-lib?rev=4c1accc22cdc36f54661e593b82898f78b05b5ca)",
+ "ic-bn-lib",
  "ic-bn-lib-common",
  "mockall",
  "pem 3.0.6",
@@ -791,7 +791,7 @@ dependencies = [
 [[package]]
 name = "canister-api"
 version = "0.1.0"
-source = "git+https://github.com/dfinity/custom-domains?rev=2297d6489a77ee5dac39d440cbdff9af8979810e#2297d6489a77ee5dac39d440cbdff9af8979810e"
+source = "git+https://github.com/dfinity/custom-domains?rev=3d63b08643e71b84566f3ff428d1d4c3fc6cdcc8#3d63b08643e71b84566f3ff428d1d4c3fc6cdcc8"
 dependencies = [
  "candid",
  "derive-new",
@@ -803,7 +803,7 @@ dependencies = [
 [[package]]
 name = "canister-client"
 version = "0.1.0"
-source = "git+https://github.com/dfinity/custom-domains?rev=2297d6489a77ee5dac39d440cbdff9af8979810e#2297d6489a77ee5dac39d440cbdff9af8979810e"
+source = "git+https://github.com/dfinity/custom-domains?rev=3d63b08643e71b84566f3ff428d1d4c3fc6cdcc8#3d63b08643e71b84566f3ff428d1d4c3fc6cdcc8"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -813,7 +813,7 @@ dependencies = [
  "canister-api",
  "derive-new",
  "fqdn",
- "ic-bn-lib 0.1.0 (git+https://github.com/dfinity/ic-bn-lib?rev=4c1accc22cdc36f54661e593b82898f78b05b5ca)",
+ "ic-bn-lib",
  "ic-bn-lib-common",
  "tokio",
  "tokio-util",
@@ -2214,7 +2214,7 @@ dependencies = [
 [[package]]
 name = "ic-bn-lib"
 version = "0.1.0"
-source = "git+https://github.com/dfinity/ic-bn-lib?rev=430eedfdce20f093f83f6d9f1f871a7fd72fe671#430eedfdce20f093f83f6d9f1f871a7fd72fe671"
+source = "git+https://github.com/dfinity/ic-bn-lib?rev=fb07ed1b89abee41d3202475f8aaef779c76762f#fb07ed1b89abee41d3202475f8aaef779c76762f"
 dependencies = [
  "ahash",
  "anyhow",
@@ -2228,6 +2228,7 @@ dependencies = [
  "candid",
  "chacha20poly1305",
  "clap",
+ "cloudflare",
  "derive-new",
  "flate2",
  "fqdn",
@@ -2289,86 +2290,6 @@ dependencies = [
  "url",
  "uuid",
  "vrl",
- "webpki-root-certs",
- "x509-parser 0.17.0",
- "zeroize",
- "zstd",
-]
-
-[[package]]
-name = "ic-bn-lib"
-version = "0.1.0"
-source = "git+https://github.com/dfinity/ic-bn-lib?rev=4c1accc22cdc36f54661e593b82898f78b05b5ca#4c1accc22cdc36f54661e593b82898f78b05b5ca"
-dependencies = [
- "ahash",
- "anyhow",
- "arc-swap",
- "async-channel 2.5.0",
- "async-trait",
- "axum",
- "axum-extra",
- "base64 0.22.1",
- "bytes",
- "candid",
- "chacha20poly1305",
- "clap",
- "cloudflare",
- "derive-new",
- "flate2",
- "fqdn",
- "futures",
- "futures-util",
- "governor",
- "hex",
- "hickory-proto",
- "hickory-resolver",
- "http",
- "http-body",
- "http-body-util",
- "humantime",
- "hyper",
- "hyper-rustls",
- "hyper-util",
- "ic-agent",
- "ic-bn-lib-common",
- "indoc",
- "instant-acme",
- "itertools 0.14.0",
- "moka",
- "nix",
- "ppp",
- "prometheus",
- "rand 0.8.5",
- "rcgen 0.14.5",
- "regex",
- "reqwest",
- "rustls",
- "rustls-pemfile",
- "rustls-platform-verifier",
- "scopeguard",
- "serde",
- "serde_json",
- "serde_with",
- "serde_yaml_ng",
- "sha1",
- "sha2 0.10.9",
- "socket2 0.6.1",
- "strum",
- "strum_macros",
- "systemstat",
- "tar",
- "tempfile",
- "thiserror 2.0.17",
- "tokio",
- "tokio-io-timeout",
- "tokio-rustls",
- "tokio-util",
- "tower",
- "tower-service",
- "tower_governor",
- "tracing",
- "url",
- "uuid",
  "webpki-root-certs",
  "x509-parser 0.17.0",
  "zeroize",
@@ -2459,7 +2380,7 @@ dependencies = [
  "http",
  "http-body-util",
  "humantime",
- "ic-bn-lib 0.1.0 (git+https://github.com/dfinity/ic-bn-lib?rev=430eedfdce20f093f83f6d9f1f871a7fd72fe671)",
+ "ic-bn-lib",
  "ic-bn-lib-common",
  "itertools 0.14.0",
  "prometheus",
