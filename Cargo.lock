@@ -474,7 +474,7 @@ dependencies = [
 [[package]]
 name = "backend"
 version = "0.1.0"
-source = "git+https://github.com/dfinity/custom-domains?rev=3d63b08643e71b84566f3ff428d1d4c3fc6cdcc8#3d63b08643e71b84566f3ff428d1d4c3fc6cdcc8"
+source = "git+https://github.com/dfinity/custom-domains?rev=c839322dccaaa36a4991cba142435d12cdba4c93#c839322dccaaa36a4991cba142435d12cdba4c93"
 dependencies = [
  "anyhow",
  "axum",
@@ -516,7 +516,7 @@ dependencies = [
 [[package]]
 name = "base"
 version = "0.1.0"
-source = "git+https://github.com/dfinity/custom-domains?rev=3d63b08643e71b84566f3ff428d1d4c3fc6cdcc8#3d63b08643e71b84566f3ff428d1d4c3fc6cdcc8"
+source = "git+https://github.com/dfinity/custom-domains?rev=c839322dccaaa36a4991cba142435d12cdba4c93#c839322dccaaa36a4991cba142435d12cdba4c93"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -791,7 +791,7 @@ dependencies = [
 [[package]]
 name = "canister-api"
 version = "0.1.0"
-source = "git+https://github.com/dfinity/custom-domains?rev=3d63b08643e71b84566f3ff428d1d4c3fc6cdcc8#3d63b08643e71b84566f3ff428d1d4c3fc6cdcc8"
+source = "git+https://github.com/dfinity/custom-domains?rev=c839322dccaaa36a4991cba142435d12cdba4c93#c839322dccaaa36a4991cba142435d12cdba4c93"
 dependencies = [
  "candid",
  "derive-new",
@@ -803,7 +803,7 @@ dependencies = [
 [[package]]
 name = "canister-client"
 version = "0.1.0"
-source = "git+https://github.com/dfinity/custom-domains?rev=3d63b08643e71b84566f3ff428d1d4c3fc6cdcc8#3d63b08643e71b84566f3ff428d1d4c3fc6cdcc8"
+source = "git+https://github.com/dfinity/custom-domains?rev=c839322dccaaa36a4991cba142435d12cdba4c93#c839322dccaaa36a4991cba142435d12cdba4c93"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -2186,7 +2186,58 @@ dependencies = [
  "http-body-util",
  "ic-certification",
  "ic-ed25519",
- "ic-transport-types",
+ "ic-transport-types 0.42.0",
+ "ic-verify-bls-signature",
+ "k256",
+ "leb128",
+ "p256",
+ "pem 3.0.6",
+ "pkcs8",
+ "rand 0.8.5",
+ "rangemap",
+ "reqwest",
+ "ring",
+ "sec1",
+ "serde",
+ "serde_bytes",
+ "serde_cbor",
+ "serde_repr",
+ "sha2 0.10.9",
+ "stop-token",
+ "thiserror 2.0.17",
+ "time",
+ "tokio",
+ "tower-service",
+ "url",
+]
+
+[[package]]
+name = "ic-agent"
+version = "0.44.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d5337598ec943bab711e0288319761abb5a7a7087ac226b03472441a90f88e0c"
+dependencies = [
+ "arc-swap",
+ "async-channel 1.9.0",
+ "async-lock",
+ "async-trait",
+ "async-watch",
+ "backoff",
+ "bytes",
+ "cached",
+ "candid",
+ "der",
+ "ecdsa",
+ "ed25519-consensus",
+ "elliptic-curve",
+ "futures-util",
+ "hex",
+ "http",
+ "http-body",
+ "http-body-util",
+ "ic-certification",
+ "ic-ed25519",
+ "ic-transport-types 0.44.3",
  "ic-verify-bls-signature",
  "k256",
  "leb128",
@@ -2214,7 +2265,7 @@ dependencies = [
 [[package]]
 name = "ic-bn-lib"
 version = "0.1.0"
-source = "git+https://github.com/dfinity/ic-bn-lib?rev=fb07ed1b89abee41d3202475f8aaef779c76762f#fb07ed1b89abee41d3202475f8aaef779c76762f"
+source = "git+https://github.com/dfinity/ic-bn-lib?rev=ec9963d0d425b353c32e612ab56974d269487230#ec9963d0d425b353c32e612ab56974d269487230"
 dependencies = [
  "ahash",
  "anyhow",
@@ -2245,7 +2296,7 @@ dependencies = [
  "hyper",
  "hyper-rustls",
  "hyper-util",
- "ic-agent",
+ "ic-agent 0.44.3",
  "ic-bn-lib-common",
  "indoc",
  "instant-acme",
@@ -2316,7 +2367,7 @@ dependencies = [
  "humantime",
  "hyper",
  "hyper-util",
- "ic-agent",
+ "ic-agent 0.42.0",
  "instant-acme",
  "parse-size",
  "prometheus",
@@ -2405,6 +2456,24 @@ dependencies = [
 name = "ic-transport-types"
 version = "0.42.0"
 source = "git+https://github.com/dfinity/agent-rs?rev=f34acedb5539838ffdbd4cf49a0832303977293f#f34acedb5539838ffdbd4cf49a0832303977293f"
+dependencies = [
+ "candid",
+ "hex",
+ "ic-certification",
+ "leb128",
+ "serde",
+ "serde_bytes",
+ "serde_cbor",
+ "serde_repr",
+ "sha2 0.10.9",
+ "thiserror 2.0.17",
+]
+
+[[package]]
+name = "ic-transport-types"
+version = "0.44.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d5fec6355d0a542bfe484eb36343b6570047394124918cb8b435e22241c65427"
 dependencies = [
  "candid",
  "hex",
