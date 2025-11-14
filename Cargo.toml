@@ -55,6 +55,11 @@ url = { version = "2.5.3", features = ["serde"] }
 [dev-dependencies]
 tempfile = "3"
 
+[patch.crates-io]
+# Temporary use fixed branch until new version is released.
+# See https://github.com/programatik29/axum-server/issues/170
+axum-server = { git = "https://github.com/AlvaroParker/axum-server", branch = "fix-trait-bound" }
+
 [profile.release]
 strip = "symbols"
 codegen-units = 1
