@@ -119,19 +119,20 @@ pub async fn setup(
 }
 
 async fn setup_custom_domains(
-    cli: &custom_domains_base::cli::CustomDomainsCli,
+    cli: &ic_custom_domains_base::cli::CustomDomainsCli,
     dns_options: DnsOptions,
     metrics_registry: &Registry,
     tasks: &mut TaskManager,
     certificate_providers: &mut Vec<Arc<dyn ProvidesCertificates>>,
 ) -> Result<(), Error> {
     let token = tasks.token();
-    let (workers, _, client) = custom_domains_backend::setup(
+    let (workers, _, client) = ic_custom_domains_backend::setup(
         cli,
         dns_options,
         token,
         HOSTNAME.get().unwrap(),
         metrics_registry.clone(),
+        None,
     )
     .await?;
 

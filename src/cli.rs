@@ -51,7 +51,7 @@ pub struct Cli {
     pub dns: DnsCli,
 
     #[command(flatten, next_help_heading = "Custom Domains")]
-    pub custom_domains: Option<custom_domains_base::cli::CustomDomainsCli>,
+    pub custom_domains: Option<ic_custom_domains_base::cli::CustomDomainsCli>,
 
     #[command(flatten, next_help_heading = "Certificates")]
     pub cert: Cert,
