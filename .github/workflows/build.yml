@@ -107,3 +107,11 @@ jobs:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME}}
           subject-digest: ${{ steps.docker_push.outputs.digest }}
           push-to-registry: true
+
+      - name: Send Slack message
+        uses: slackapi/slack-github-action@91efab103c0de0a537f72a35f6b8cda0ee76bf0a
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            text: "New `ic-http-lb` release `${{ github.ref_name }}` has been published"
