@@ -202,7 +202,7 @@ impl BackendManager {
         )
     }
 
-    // Updates given router with new set of backends
+    /// Updates given router with new set of backends
     async fn update_router(
         &self,
         router: &Arc<ArcSwapOption<LBBackendRouter>>,
@@ -250,6 +250,7 @@ impl BackendManager {
             .filter(|x| x.enabled)
             .collect::<Vec<_>>();
 
+        // Update main & fallback routers
         self.update_router(&self.backend_router, backends_enabled, config.strategy)
             .await;
 
@@ -391,7 +392,7 @@ impl ChecksTarget<Arc<Backend>> for BackendHealthChecker {
         let req = Request::builder()
             .uri(target.uri_health.clone())
             .body(Body::empty())
-            .unwrap();
+            .unwrap(); // This should never fail
 
         let res = match timeout(self.timeout, self.client.execute(req)).await {
             Ok(res) => match res {
@@ -423,8 +424,6 @@ impl ChecksTarget<Arc<Backend>> for BackendHealthChecker {
 /// Executes the requests using its HTTP client
 #[derive(Debug, new)]
 pub struct RequestExecutor {
-    #[new(value = "PathAndQuery::from_static(\"/\")")]
-    pq_default: PathAndQuery,
     client: Arc<dyn ClientHttp<Body>>,
 }
 
@@ -439,6 +438,8 @@ impl ExecutesRequest<Arc<Backend>> for RequestExecutor {
         backend: &Arc<Backend>,
         mut req: Self::Request,
     ) -> Result<Self::Response, Self::Error> {
+        const PQ_DEFAULT: PathAndQuery = PathAndQuery::from_static("/");
+
         // Store the selected backend in the request context
         let _ = REQUEST_CONTEXT.try_with(|x| {
             x.borrow_mut().backend = Some(backend.clone());
@@ -447,12 +448,7 @@ impl ExecutesRequest<Arc<Backend>> for RequestExecutor {
         let uri = match Uri::builder()
             .scheme(backend.url.scheme())
             .authority(backend.url.authority())
-            .path_and_query(
-                req.uri()
-                    .path_and_query()
-                    .unwrap_or(&self.pq_default)
-                    .as_str(),
-            )
+            .path_and_query(req.uri().path_and_query().unwrap_or(&PQ_DEFAULT).as_str())
             .build()
         {
             Ok(v) => v,

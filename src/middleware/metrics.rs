@@ -125,8 +125,8 @@ pub async fn middleware(
     let (tls_version, tls_cipher, tls_handshake) =
         tls_info.as_ref().map_or(("", "", Duration::ZERO), |x| {
             (
-                x.protocol.as_str().unwrap(),
-                x.cipher.as_str().unwrap(),
+                x.protocol.as_str().unwrap_or_default(),
+                x.cipher.as_str().unwrap_or_default(),
                 x.handshake_dur,
             )
         });
