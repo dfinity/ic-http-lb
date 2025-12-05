@@ -151,7 +151,7 @@ pub async fn handler(
 
     request.headers_mut().insert(
         X_FORWARDED_HOST,
-        HeaderValue::from_maybe_shared(Bytes::from(host)).unwrap(),
+        HeaderValue::from_maybe_shared(Bytes::from(host)).unwrap(), // Host is guaranteed to fit into HeaderValue
     );
 
     // Check if the request body size is known and it is small enough

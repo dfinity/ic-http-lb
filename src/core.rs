@@ -179,7 +179,7 @@ pub async fn main(
                 .with_options((&cli.http_server).into())
                 .with_metrics(http_metrics.clone())
                 .build()
-                .unwrap(),
+                .context("unable to create metrics HTTP server")?,
         );
 
         tasks.add("metrics_server", srv);

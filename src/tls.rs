@@ -89,6 +89,7 @@ pub async fn setup(
             domains: vec![cli.api.api_hostname.clone().unwrap().to_string()],
             contact: "mailto:boundary-nodes@dfinity.org".to_string(),
             cache_path: cli.api.api_acme_cache.clone().unwrap(),
+            tls_config: None,
         }));
         tasks.add("acme_alpn", acme_alpn.clone());
 

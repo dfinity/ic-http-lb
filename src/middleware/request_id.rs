@@ -20,13 +20,13 @@ impl Deref for RequestId {
 pub async fn middleware(mut request: Request, next: Next) -> Response {
     let request_id = RequestId(Uuid::now_v7());
     let hdr = request_id.to_string();
+    // UUID is guaranteed to fit into header value
     let hdr = HeaderValue::from_maybe_shared(Bytes::from(hdr)).unwrap();
 
     request.extensions_mut().insert(request_id);
     request.headers_mut().insert(X_REQUEST_ID, hdr.clone());
 
     let mut response = next.run(request).await;
-    response.extensions_mut().insert(request_id);
     response.headers_mut().insert(X_REQUEST_ID, hdr);
 
     response
