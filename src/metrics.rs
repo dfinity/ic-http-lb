@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::Error;
+use anyhow::{Error, anyhow};
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use axum::{Router, extract::State, response::IntoResponse, routing::get};
@@ -73,11 +73,14 @@ impl MetricsRunner {
 impl MetricsRunner {
     async fn update(&self) -> Result<(), Error> {
         // Record jemalloc memory usage
-        epoch::advance().unwrap();
-        self.mem_allocated
-            .set(stats::allocated::read().unwrap() as i64);
-        self.mem_resident
-            .set(stats::resident::read().unwrap() as i64);
+        epoch::advance().map_err(|e| anyhow!("unable to advance epoch: {e:#}"))?;
+
+        self.mem_allocated.set(
+            stats::allocated::read().map_err(|e| anyhow!("unable to read stats: {e:#}"))? as i64,
+        );
+        self.mem_resident.set(
+            stats::resident::read().map_err(|e| anyhow!("unable to read stats: {e:#}"))? as i64,
+        );
 
         // Get a snapshot of metrics
         let metric_families = self.registry.gather();

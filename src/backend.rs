@@ -50,6 +50,7 @@ pub struct RequestContext {
     pub response_body_buffered: bool,
 }
 
+/// Backend configuration
 #[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct Config {
     strategy: Strategy,
@@ -67,7 +68,7 @@ impl Default for Config {
     }
 }
 
-/// Backend as represented in the config file
+/// Single backend as represented in the config file
 #[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct BackendConf {
     pub name: String,
@@ -76,7 +77,7 @@ pub struct BackendConf {
     pub weight: usize,
 }
 
-/// Backend after preprocessing
+/// Single backend after preprocessing
 #[derive(Clone, Debug)]
 pub struct Backend {
     pub name: String,
@@ -107,6 +108,7 @@ impl From<BackendConf> for Backend {
     }
 }
 
+/// Sets up the LBBackendRouter instance using the given config parameters
 pub fn setup_backend_router(
     client: Arc<dyn ClientHttp<Body>>,
     backends: Vec<BackendConf>,
@@ -147,6 +149,12 @@ pub struct BackendManager {
     config: Mutex<Config>,
     metrics_distributor: distributor::Metrics,
     metrics_health_checker: health_check::Metrics,
+}
+
+impl Display for BackendManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "BackendManager")
+    }
 }
 
 impl BackendManager {
@@ -202,7 +210,7 @@ impl BackendManager {
         )
     }
 
-    // Updates given router with new set of backends
+    /// Updates given router with new set of backends
     async fn update_router(
         &self,
         router: &Arc<ArcSwapOption<LBBackendRouter>>,
@@ -228,7 +236,7 @@ impl BackendManager {
         // Shut down the old one if any
         if let Some(v) = router_old {
             v.stop().await;
-            warn!("Old backend router stopped");
+            warn!("{self}: old backend router stopped");
         }
     }
 
@@ -250,6 +258,7 @@ impl BackendManager {
             .filter(|x| x.enabled)
             .collect::<Vec<_>>();
 
+        // Update main & fallback routers
         self.update_router(&self.backend_router, backends_enabled, config.strategy)
             .await;
 
@@ -260,10 +269,10 @@ impl BackendManager {
         )
         .await;
 
-        warn!("New backends applied");
+        warn!("{self}: new backends applied");
     }
 
-    /// Loads the backends from the config file
+    /// Loads the config from the file
     pub async fn load_config(&self) -> Result<(), Error> {
         // Load
         let cfg = fs::read(&self.config_path)
@@ -275,7 +284,7 @@ impl BackendManager {
 
         self.set_config(config).await?;
 
-        warn!("Config file loaded");
+        warn!("{self}: config file loaded");
         Ok(())
     }
 
@@ -334,7 +343,7 @@ impl BackendManager {
 
     /// Enables or disables the given backend
     pub async fn set_backend_state(&self, name: String, enabled: bool) -> Result<(), Error> {
-        // Keep the backends locked to ensure that we don't update them concurrently
+        // Keep the config locked to ensure that we don't update it concurrently
         let mut config = self.config.lock().await;
 
         // Find the backend & set the status
@@ -357,19 +366,19 @@ impl Run for BackendManager {
     async fn run(&self, token: CancellationToken) -> Result<(), Error> {
         let mut sig = signal(SignalKind::hangup()).context("unable to listen for SIGHUP")?;
 
-        warn!("BackendManager: Task started");
+        warn!("{self}: task started");
         loop {
             select! {
                 _ = token.cancelled() => {
-                    warn!("BackendManager: Task stopped");
+                    warn!("{self}: task stopped");
                     break;
                 },
 
                 _ = sig.recv() => {
-                    warn!("BackendManager: received config reload signal");
+                    warn!("{self}: received config reload signal");
                     match self.load_config().await {
-                        Ok(_) => warn!("BackendManager: configuration reloaded successfully"),
-                        Err(e) => warn!("BackendManager: failed to reload config: {e:#}"),
+                        Ok(_) => warn!("{self}: configuration reloaded successfully"),
+                        Err(e) => warn!("{self}: failed to reload config: {e:#}"),
                     }
                 }
             }
@@ -391,7 +400,7 @@ impl ChecksTarget<Arc<Backend>> for BackendHealthChecker {
         let req = Request::builder()
             .uri(target.uri_health.clone())
             .body(Body::empty())
-            .unwrap();
+            .unwrap(); // This should never fail
 
         let res = match timeout(self.timeout, self.client.execute(req)).await {
             Ok(res) => match res {
@@ -423,8 +432,6 @@ impl ChecksTarget<Arc<Backend>> for BackendHealthChecker {
 /// Executes the requests using its HTTP client
 #[derive(Debug, new)]
 pub struct RequestExecutor {
-    #[new(value = "PathAndQuery::from_static(\"/\")")]
-    pq_default: PathAndQuery,
     client: Arc<dyn ClientHttp<Body>>,
 }
 
@@ -439,6 +446,8 @@ impl ExecutesRequest<Arc<Backend>> for RequestExecutor {
         backend: &Arc<Backend>,
         mut req: Self::Request,
     ) -> Result<Self::Response, Self::Error> {
+        const PQ_DEFAULT: PathAndQuery = PathAndQuery::from_static("/");
+
         // Store the selected backend in the request context
         let _ = REQUEST_CONTEXT.try_with(|x| {
             x.borrow_mut().backend = Some(backend.clone());
@@ -447,21 +456,16 @@ impl ExecutesRequest<Arc<Backend>> for RequestExecutor {
         let uri = match Uri::builder()
             .scheme(backend.url.scheme())
             .authority(backend.url.authority())
-            .path_and_query(
-                req.uri()
-                    .path_and_query()
-                    .unwrap_or(&self.pq_default)
-                    .as_str(),
-            )
+            .path_and_query(req.uri().path_and_query().unwrap_or(&PQ_DEFAULT).as_str())
             .build()
         {
             Ok(v) => v,
             Err(e) => {
                 warn!(
-                    "Invalid URL '{}://{}/{:?}': {e:#}",
+                    "Invalid URL '{}://{}{}': {e:#}",
                     backend.url.scheme(),
                     backend.url.authority(),
-                    req.uri().path_and_query(),
+                    req.uri().path_and_query().unwrap_or(&PQ_DEFAULT),
                 );
                 return Err(e.into());
             }
