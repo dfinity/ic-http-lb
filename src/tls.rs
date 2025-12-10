@@ -10,12 +10,12 @@ use ic_bn_lib::{
     tls::{
         acme::alpn::{AcmeAlpn, Opts},
         prepare_server_config,
-        providers::{self, Aggregator, Issuer, issuer, storage},
+        providers::{self, Aggregator, storage},
         resolver,
     },
 };
 use ic_bn_lib_common::{
-    traits::{http::Client, tls::ProvidesCertificates},
+    traits::tls::ProvidesCertificates,
     types::{dns::Options as DnsOptions, http::ALPN_ACME, tls::TlsOptions},
 };
 use prometheus::Registry;
@@ -26,7 +26,6 @@ use crate::{cli::Cli, core::HOSTNAME};
 pub async fn setup(
     cli: &Cli,
     tasks: &mut TaskManager,
-    http_client: Arc<dyn Client>,
     registry: &Registry,
 ) -> Result<ServerConfig, Error> {
     // Prepare certificate storage
@@ -37,23 +36,6 @@ pub async fn setup(
 
     // Setup certificate providers
     let mut cert_providers: Vec<Arc<dyn ProvidesCertificates>> = vec![];
-
-    // Create issuer providers
-    let issuer_metrics = issuer::Metrics::new(registry);
-    for v in &cli.cert.cert_provider_issuer_url {
-        let issuer = Arc::new(Issuer::new(
-            http_client.clone(),
-            v.clone(),
-            issuer_metrics.clone(),
-        ));
-
-        cert_providers.push(issuer.clone());
-        tasks.add_interval(
-            &format!("{issuer:?}"),
-            issuer,
-            cli.cert.cert_provider_issuer_poll_interval,
-        );
-    }
 
     // Create File providers
     for v in &cli.cert.cert_provider_file {

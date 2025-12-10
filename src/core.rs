@@ -169,7 +169,7 @@ pub async fn main(
         tasks.add("server_api", server_api);
     }
 
-    // Start metrics server if configures
+    // Start metrics server if configured
     if let Some(addr) = cli.listen.listen_metrics {
         let router = metrics::setup(&registry, &mut tasks);
 
@@ -188,7 +188,7 @@ pub async fn main(
     // Create HTTPS server
     if !cli.listen.listen_insecure_serve_http_only {
         // Prepare TLS related stuff
-        let rustls_cfg = tls::setup(cli, &mut tasks, http_client_reqwest, &registry)
+        let rustls_cfg = tls::setup(cli, &mut tasks, &registry)
             .await
             .context("unable to setup TLS")?;
 
