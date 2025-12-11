@@ -12,7 +12,6 @@ use ic_bn_lib_common::{
         vector::VectorCli,
     },
 };
-use url::Url;
 
 use crate::core::{AUTHOR_NAME, SERVICE_NAME};
 
@@ -166,14 +165,6 @@ pub struct Cert {
     /// Each certificate should be a pair .pem + .key files with the same base name.
     #[clap(env, long, value_delimiter = ',')]
     pub cert_provider_dir: Vec<PathBuf>,
-
-    /// Request certificates from the 'certificate-issuer' instances reachable over given URLs.
-    #[clap(env, long, value_delimiter = ',')]
-    pub cert_provider_issuer_url: Vec<Url>,
-
-    /// How frequently to refresh certificate issuers
-    #[clap(env, long, default_value = "30s", value_parser = parse_duration)]
-    pub cert_provider_issuer_poll_interval: Duration,
 
     /// How frequently to poll providers for certificates
     #[clap(env, long, default_value = "5s", value_parser = parse_duration)]
