@@ -14,7 +14,7 @@ arc-swap = "1.7.1"
 async-trait = "0.1.83"
 axum = { version = "0.8.1", features = ["macros"] }
 axum-extra = "0.10.0"
-bytes = "1.10.0"
+bytes = "1.11.1"
 clap = { version = "4.5.20", features = ["derive", "string", "env"] }
 derive-new = "0.7.0"
 fqdn = { version = "0.4.6", features = ["serde"] }
