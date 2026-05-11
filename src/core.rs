@@ -44,6 +44,8 @@ pub async fn main(
     cli: &Cli,
     log_handle: Handle<LevelFilter, tracing_subscriber::Registry>,
 ) -> Result<(), Error> {
+    let _ = ic_bn_lib::rustls::crypto::ring::default_provider().install_default();
+
     ENV.set(cli.misc.env.clone()).unwrap();
     HOSTNAME.set(cli.misc.hostname.clone()).unwrap();
 
