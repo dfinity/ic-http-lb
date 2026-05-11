@@ -237,6 +237,8 @@ mod test {
 
     #[tokio::test]
     async fn test_api_auth() {
+        let _ = ic_bn_lib::rustls::crypto::ring::default_provider().install_default();
+
         let args: Vec<&str> = vec!["", "--config-path", "foo", "--api-token", "deadbeef"];
         let cli = Cli::parse_from(args);
 
@@ -299,6 +301,8 @@ mod test {
 
     #[tokio::test]
     async fn test_config() {
+        let _ = ic_bn_lib::rustls::crypto::ring::default_provider().install_default();
+
         let args: Vec<&str> = vec!["", "--config-path", "foo", "--api-token", "deadbeef"];
         let cli = Cli::parse_from(args);
 

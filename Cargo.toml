@@ -13,7 +13,7 @@ anyhow = "1.0.98"
 arc-swap = "1.7.1"
 async-trait = "0.1.83"
 axum = { version = "0.8.1", features = ["macros"] }
-axum-extra = "0.10.0"
+axum-extra = { version = "0.12.6", features = ["middleware"] }
 bytes = "1.11.1"
 clap = { version = "4.5.20", features = ["derive", "string", "env"] }
 derive-new = "0.7.0"

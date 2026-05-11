@@ -68,6 +68,8 @@ mod test {
 
     #[tokio::test]
     async fn test_load_balancer() {
+        let _ = ic_bn_lib::rustls::crypto::ring::default_provider().install_default();
+
         // Set up stub backend on a random port
         let opts = ServerOptions::default();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

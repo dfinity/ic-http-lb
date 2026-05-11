@@ -9,13 +9,16 @@ use axum::{
     middleware::{from_fn, from_fn_with_state},
     response::{IntoResponse, Response},
 };
-use axum_extra::{extract::Host, middleware::option_layer};
+use axum_extra::middleware::option_layer;
 use bytes::Bytes;
 use derive_new::new;
 use http::{HeaderValue, StatusCode, request::Parts};
 use http_body_util::{BodyExt, Full, Limited};
 use ic_bn_lib::{
-    http::{body::buffer_body, extract_host, headers::X_FORWARDED_HOST, middleware::waf::WafLayer},
+    http::{
+        body::buffer_body, extract_authority, extract_host, headers::X_FORWARDED_HOST,
+        middleware::waf::WafLayer,
+    },
     utils::backend_router::Error as BackendRouterError,
     vector::client::Vector,
 };
@@ -140,11 +143,11 @@ async fn buffer_response(state: &HandlerState, response: Response) -> Response {
     Response::from_parts(parts, body)
 }
 
-pub async fn handler(
-    State(state): State<Arc<HandlerState>>,
-    Host(host): Host,
-    mut request: Request,
-) -> Response {
+pub async fn handler(State(state): State<Arc<HandlerState>>, mut request: Request) -> Response {
+    let Some(host) = extract_authority(&request).map(|x| x.to_string()) else {
+        return (StatusCode::BAD_REQUEST, "Unable to extract authority").into_response();
+    };
+
     let Some(backend_router) = state.backend_manager.get_backend_router() else {
         return (StatusCode::SERVICE_UNAVAILABLE, "Service is not yet ready").into_response();
     };
@@ -159,8 +162,7 @@ pub async fn handler(
         .body()
         .size_hint()
         .exact()
-        .map(|x| x <= state.request_body_size_limit as u64)
-        == Some(true);
+        .is_some_and(|x| x <= state.request_body_size_limit as u64);
 
     // Buffer the request body only if:
     // - It is bufferable, and:
@@ -276,11 +278,18 @@ pub fn setup_axum_router(
         .layer(option_layer(waf_layer));
 
     let router = Router::new()
-        .fallback(|Host(host): Host, request: Request| async move {
+        .fallback(|request: Request| async move {
+            let Some(host) = extract_authority(&request) else {
+                return Ok((StatusCode::BAD_REQUEST, "Unable to extract authority").into_response());
+            };
+
             // See if we have API enabled
             if let Some(v) = router_api {
                 // Check if the request's host matches API hostname
-                if api_hostname.zip(extract_host(&host)).map(|(a, b)| a == b) == Some(true) {
+                if api_hostname
+                    .zip(extract_host(host))
+                    .is_some_and(|(a, b)| a == b)
+                {
                     return v.oneshot(request).await;
                 }
             }
