@@ -52,10 +52,10 @@ pub async fn auth_middleware(
 }
 
 pub async fn health_handler(State(state): State<Arc<ApiState>>) -> impl IntoResponse {
-    if !state.backend_manager.get_healthy_nodes().is_empty() {
-        StatusCode::NO_CONTENT
-    } else {
+    if state.backend_manager.get_healthy_nodes().is_empty() {
         StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::NO_CONTENT
     }
 }
 
@@ -71,11 +71,11 @@ pub async fn backend_handler(
                 .backend_manager
                 .set_backend_state(backend, action == "enable")
                 .await
-                .map_err(|e| (StatusCode::BAD_REQUEST, format!("Error: {e:#}")))?
+                .map_err(|e| (StatusCode::BAD_REQUEST, format!("Error: {e:#}")))?;
         }
 
         _ => return Err((StatusCode::BAD_REQUEST, format!("Unknown action: {action}"))),
-    };
+    }
 
     Ok((StatusCode::OK, "Ok\n".to_string()))
 }
@@ -106,7 +106,7 @@ pub async fn config_reload(State(state): State<Arc<ApiState>>) -> Response {
             format!("Error reloading config: {e:#}"),
         )
             .into_response();
-    };
+    }
 
     "Ok\n".into_response()
 }
@@ -187,7 +187,7 @@ pub fn setup_api_axum_router(
         .route("/config/put", put(config_put).layer(auth.clone()));
 
     if let Some(v) = waf_layer {
-        router = router.nest("/waf", waf::create_router(v).layer(auth))
+        router = router.nest("/waf", waf::create_router(v).layer(auth));
     }
 
     #[allow(unused_mut)]

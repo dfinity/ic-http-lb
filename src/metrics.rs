@@ -1,3 +1,5 @@
+#![allow(clippy::cast_possible_wrap)]
+
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -71,7 +73,7 @@ impl MetricsRunner {
 }
 
 impl MetricsRunner {
-    async fn update(&self) -> Result<(), Error> {
+    fn update(&self) -> Result<(), Error> {
         // Record jemalloc memory usage
         epoch::advance().map_err(|e| anyhow!("unable to advance epoch: {e:#}"))?;
 
@@ -102,7 +104,7 @@ impl MetricsRunner {
 impl Run for MetricsRunner {
     async fn run(&self, _: CancellationToken) -> Result<(), Error> {
         let start = Instant::now();
-        if let Err(e) = self.update().await {
+        if let Err(e) = self.update() {
             warn!("Unable to update metrics: {e:#}");
         } else {
             debug!("Metrics updated in {}ms", start.elapsed().as_millis());

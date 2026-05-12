@@ -22,7 +22,7 @@ use prometheus::Registry;
 
 use crate::{cli::Cli, core::HOSTNAME};
 
-// Prepares the stuff needed for serving TLS
+/// Prepares the stuff needed for serving TLS
 pub async fn setup(
     cli: &Cli,
     tasks: &mut TaskManager,
@@ -124,7 +124,7 @@ async fn setup_custom_domains(
     }
     tasks.add("custom_domains_canister_client", client.clone());
 
-    certificate_providers.push(client.clone());
+    certificate_providers.push(client);
 
     Ok(())
 }

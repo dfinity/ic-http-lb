@@ -1,3 +1,8 @@
+#![warn(clippy::pedantic)]
+#![warn(clippy::nursery)]
+#![allow(clippy::redundant_closure_for_method_calls)]
+#![allow(clippy::doc_markdown)]
+
 mod api;
 mod backend;
 mod cli;

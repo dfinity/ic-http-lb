@@ -40,6 +40,7 @@ pub const AUTHOR_NAME: &str = "Boundary Node Team <boundary-nodes@dfinity.org>";
 pub static ENV: OnceLock<String> = OnceLock::new();
 pub static HOSTNAME: OnceLock<String> = OnceLock::new();
 
+#[allow(clippy::too_many_lines)]
 pub async fn main(
     cli: &Cli,
     log_handle: Handle<LevelFilter, tracing_subscriber::Registry>,
@@ -134,17 +135,16 @@ pub async fn main(
         vector.clone(),
         &registry,
         waf_layer,
-    )
-    .context("unable to setup Axum Router")?;
+    );
 
     // HTTP server metrics
     let http_metrics = Metrics::new(&registry);
 
     // Set up HTTP router (redirecting to HTTPS or serving all endpoints)
-    let axum_router_http = if !cli.listen.listen_insecure_serve_http_only {
-        Router::new().fallback(redirect_to_https)
-    } else {
+    let axum_router_http = if cli.listen.listen_insecure_serve_http_only {
         axum_router.clone()
+    } else {
+        Router::new().fallback(redirect_to_https)
     };
 
     let server_http = Arc::new(

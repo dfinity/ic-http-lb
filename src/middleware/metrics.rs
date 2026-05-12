@@ -1,3 +1,5 @@
+#![allow(clippy::cast_possible_wrap)]
+
 use std::{
     cell::RefCell,
     sync::Arc,
@@ -96,6 +98,7 @@ pub struct MetricsState {
     log_requests_long: Option<Duration>,
 }
 
+#[allow(clippy::too_many_lines)]
 pub async fn middleware(
     State(state): State<Arc<MetricsState>>,
     Extension(conn_info): Extension<Arc<ConnInfo>>,
@@ -114,12 +117,7 @@ pub async fn middleware(
         .remove::<RequestId>()
         .map(|x| x.to_string())
         .unwrap_or_default();
-    let request_size = request
-        .body()
-        .size_hint()
-        .exact()
-        .map(|x| x as i64)
-        .unwrap_or(-1);
+    let request_size = request.body().size_hint().exact().map_or(-1, |x| x as i64);
     let remote_addr = conn_info.remote_addr.ip().to_canonical().to_string();
     let timestamp = time::OffsetDateTime::now_utc();
     let (tls_version, tls_cipher, tls_handshake) =
@@ -147,8 +145,7 @@ pub async fn middleware(
         let backend = meta
             .ctx
             .backend
-            .map(|x| x.name.clone())
-            .unwrap_or_else(|| "unknown".into());
+            .map_or_else(|| "unknown".into(), |x| x.name.clone());
 
         let labels = &[
             tls_version,
@@ -243,12 +240,7 @@ pub async fn middleware(
         .await;
     let duration = start.elapsed().as_secs_f64();
 
-    let response_size = response
-        .body()
-        .size_hint()
-        .exact()
-        .map(|x| x as i64)
-        .unwrap_or(-1);
+    let response_size = response.body().size_hint().exact().map_or(-1, |x| x as i64);
     let retries = response
         .extensions_mut()
         .remove::<Retries>()

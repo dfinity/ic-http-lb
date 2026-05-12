@@ -1,3 +1,5 @@
+#![allow(clippy::struct_field_names)]
+
 use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
 use clap::{Args, Parser};
