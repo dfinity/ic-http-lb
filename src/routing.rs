@@ -92,8 +92,7 @@ async fn buffer_response(state: &HandlerState, response: Response) -> Response {
         .body()
         .size_hint()
         .exact()
-        .map(|x| x <= state.response_body_size_limit as u64)
-        == Some(true);
+        .is_some_and(|x| x <= state.response_body_size_limit as u64);
 
     // Return the response as-is if the body isn't bufferable
     if !body_bufferable {
@@ -107,10 +106,9 @@ async fn buffer_response(state: &HandlerState, response: Response) -> Response {
         .unwrap_or_default()
         .into_inner()
         .backend
-        .map(|x| x.name.clone())
-        .unwrap_or_else(|| "unknown".into());
-    let body = Limited::new(body, state.response_body_size_limit);
+        .map_or_else(|| "unknown".into(), |x| x.name.clone());
 
+    let body = Limited::new(body, state.response_body_size_limit);
     let Ok(body) = timeout(state.response_body_timeout, body.collect()).await else {
         info!("Timed out reading response body from backend '{backend}'");
         return (
@@ -246,7 +244,7 @@ pub fn setup_axum_router(
     vector: Option<Arc<Vector>>,
     registry: &Registry,
     waf_layer: Option<WafLayer>,
-) -> Result<Router, Error> {
+) -> Router {
     let state = Arc::new(HandlerState::new(
         backend_manager,
         cli.network.network_request_body_buffer,
@@ -277,7 +275,7 @@ pub fn setup_axum_router(
         ))
         .layer(option_layer(waf_layer));
 
-    let router = Router::new()
+    Router::new()
         .fallback(|request: Request| async move {
             let Some(host) = extract_authority(&request) else {
                 return Ok((StatusCode::BAD_REQUEST, "Unable to extract authority").into_response());
@@ -296,7 +294,5 @@ pub fn setup_axum_router(
 
             Ok(handler.call(request, state).await)
         })
-        .layer(middlewares);
-
-    Ok(router)
+        .layer(middlewares)
 }

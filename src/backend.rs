@@ -1,3 +1,5 @@
+#![allow(clippy::significant_drop_tightening)]
+
 use std::{cell::RefCell, fmt::Display, path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{Context, Error, anyhow, bail};
@@ -108,7 +110,7 @@ impl From<BackendConf> for Backend {
     }
 }
 
-/// Sets up the LBBackendRouter instance using the given config parameters
+/// Sets up the `LBBackendRouter` instance using the given config parameters
 pub fn setup_backend_router(
     client: Arc<dyn ClientHttp<Body>>,
     backends: Vec<BackendConf>,
@@ -158,7 +160,7 @@ impl Display for BackendManager {
 }
 
 impl BackendManager {
-    /// Create a new BackendManager
+    /// Create a new `BackendManager`
     pub fn new(
         client: Arc<dyn ClientHttp<Body>>,
         config_path: PathBuf,
@@ -201,7 +203,7 @@ impl BackendManager {
     ) -> LBBackendRouter {
         setup_backend_router(
             self.client.clone(),
-            backends.clone(),
+            backends,
             strategy,
             self.check_interval,
             self.check_timeout,
@@ -218,13 +220,13 @@ impl BackendManager {
         strategy: Strategy,
     ) {
         // Prepare new BackendRouter
-        let router_new = if !backends.is_empty() {
+        let router_new = if backends.is_empty() {
+            None
+        } else {
             let r = self.create_backend_router(backends.clone(), strategy);
             // Wait until all backends have known health status
             Self::wait_healthchecks(&r).await;
             Some(Arc::new(r))
-        } else {
-            None
         };
 
         // Get the old BackendRouter
@@ -337,8 +339,7 @@ impl BackendManager {
     pub fn get_healthy_nodes(&self) -> Arc<Vec<Arc<Backend>>> {
         self.backend_router
             .load_full()
-            .map(|x| x.get_healthy())
-            .unwrap_or_else(|| Arc::new(vec![]))
+            .map_or_else(|| Arc::new(vec![]), |x| x.get_healthy())
     }
 
     /// Enables or disables the given backend
@@ -369,7 +370,7 @@ impl Run for BackendManager {
         warn!("{self}: task started");
         loop {
             select! {
-                _ = token.cancelled() => {
+                () = token.cancelled() => {
                     warn!("{self}: task stopped");
                     break;
                 },
@@ -377,7 +378,7 @@ impl Run for BackendManager {
                 _ = sig.recv() => {
                     warn!("{self}: received config reload signal");
                     match self.load_config().await {
-                        Ok(_) => warn!("{self}: configuration reloaded successfully"),
+                        Ok(()) => warn!("{self}: configuration reloaded successfully"),
                         Err(e) => warn!("{self}: failed to reload config: {e:#}"),
                     }
                 }
@@ -402,19 +403,17 @@ impl ChecksTarget<Arc<Backend>> for BackendHealthChecker {
             .body(Body::empty())
             .unwrap(); // This should never fail
 
-        let res = match timeout(self.timeout, self.client.execute(req)).await {
-            Ok(res) => match res {
+        let res = if let Ok(res) = timeout(self.timeout, self.client.execute(req)).await {
+            match res {
                 Ok(v) => v,
                 Err(e) => {
                     info!("Health check failed for {target}: request failed: {e:#}");
                     return TargetState::Degraded;
                 }
-            },
-
-            Err(_) => {
-                info!("Health check failed for {target}: request timed out");
-                return TargetState::Degraded;
             }
+        } else {
+            info!("Health check failed for {target}: request timed out");
+            return TargetState::Degraded;
         };
 
         if !res.status().is_success() {
