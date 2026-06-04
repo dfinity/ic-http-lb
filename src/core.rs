@@ -10,11 +10,14 @@ use ic_bn_lib::{
     rustls,
     tasks::TaskManager,
     tls::{prepare_client_config, verify::NoopServerCertVerifier},
-    vector::client::Vector,
+    vector::{VectorOptions, client::Vector},
 };
 use ic_bn_lib_common::{
     traits::http::ClientHttp,
-    types::http::{ClientOptions, Metrics},
+    types::{
+        dns::Options as DnsOptions,
+        http::{ClientOptions, Metrics},
+    },
 };
 use prometheus::Registry;
 use tokio::{
@@ -70,7 +73,8 @@ pub async fn main(
 
     http_client_opts.tls_config = Some(http_client_tls_config);
 
-    let resolver = dns::Resolver::new((&cli.dns).into());
+    let dns_opts: DnsOptions = (&cli.dns).into();
+    let resolver = dns::Resolver::new(dns_opts).context("unable to create DNS resolver")?;
 
     let http_client_reqwest = Arc::new(
         ReqwestClient::new(http_client_opts.clone(), Some(resolver.clone()))
@@ -89,13 +93,19 @@ pub async fn main(
     };
 
     // Setup Vector
-    let vector = cli.log.vector.log_vector_url.as_ref().map(|_| {
-        Arc::new(Vector::new(
-            &cli.log.vector,
+    let vector = if cli.log.vector.log_vector_url.is_some() {
+        let opts =
+            VectorOptions::try_from(&cli.log.vector).context("unable to parse Vector options")?;
+
+        Some(Arc::new(Vector::new(
+            opts,
             http_client_reqwest.clone(),
+            "http",
             &registry,
-        ))
-    });
+        )))
+    } else {
+        None
+    };
 
     // Setup backend routing
     let backend_manager = Arc::new(BackendManager::new(
