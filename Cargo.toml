@@ -22,15 +22,12 @@ hostname = "0.4.0"
 http = "1.3.1"
 http-body-util = "0.1.3"
 humantime = "2.2.0"
-ic-bn-lib = { version = "0.2.1", features = [
+ic-bn-lib = { version = "0.3.1", features = [
     "acme-alpn",
     "cert-providers",
     "clients-hyper",
     "vector",
 ] }
-ic-bn-lib-common = "0.2.1"
-ic-custom-domains-backend = "0.2"
-ic-custom-domains-base = "0.2"
 itertools = "0.15.0"
 prometheus = "0.14.0"
 serde = "1.0"

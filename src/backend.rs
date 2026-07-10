@@ -9,20 +9,14 @@ use axum::{body::Body, extract::Request, response::Response};
 use derive_new::new;
 use http::{Uri, Version, uri::PathAndQuery};
 use ic_bn_lib::{
-    http::headers::strip_connection_headers,
+    http::{ClientHttp, Error as HttpError, headers::strip_connection_headers},
+    tasks::Run,
     utils::{
+        ChecksTarget, ExecutesRequest, TargetState,
         backend_router::BackendRouter,
         distributor::{self, Strategy},
         health_check::{self},
     },
-};
-use ic_bn_lib_common::{
-    traits::{
-        Run,
-        http::ClientHttp,
-        utils::{ChecksTarget, ExecutesRequest},
-    },
-    types::{http::Error as HttpError, utils::TargetState},
 };
 use itertools::Itertools;
 use prometheus::Registry;
