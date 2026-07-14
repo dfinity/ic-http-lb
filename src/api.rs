@@ -197,9 +197,9 @@ pub fn setup_api_axum_router(
     if cli.sev_snp.sev_snp_enable {
         router = router.route(
             "/sev-snp/report",
-            post(ic_bn_lib::utils::sev_snp::handler)
+            post(ic_bn_lib::sev_snp::handler)
                 .with_state(
-                    ic_bn_lib::utils::sev_snp::SevSnpState::new(
+                    ic_bn_lib::sev_snp::SevSnpState::new(
                         cli.sev_snp.sev_snp_cache_ttl,
                         cli.sev_snp.sev_snp_cache_size,
                     )

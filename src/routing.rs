@@ -19,7 +19,7 @@ use ic_bn_lib::{
         body::buffer_body, extract_authority, extract_host, headers::X_FORWARDED_HOST,
         middleware::waf::WafLayer,
     },
-    utils::backend_router::Error as BackendRouterError,
+    lb::backend_router::Error as BackendRouterError,
     vector::client::Vector,
 };
 use prometheus::Registry;

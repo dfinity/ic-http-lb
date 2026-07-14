@@ -22,10 +22,11 @@ hostname = "0.4.0"
 http = "1.3.1"
 http-body-util = "0.1.3"
 humantime = "2.2.0"
-ic-bn-lib = { version = "0.3.1", features = [
+ic-bn-lib = { version = "0.4", features = [
     "acme-alpn",
     "cert-providers",
     "clients-hyper",
+    "lb",
     "vector",
 ] }
 itertools = "0.15.0"

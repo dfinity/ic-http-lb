@@ -64,7 +64,7 @@ pub struct Cli {
 
     #[cfg(all(target_os = "linux", feature = "sev-snp"))]
     #[command(flatten, next_help_heading = "SEV-SNP")]
-    pub sev_snp: ic_bn_lib::utils::sev_snp::SevSnpCli,
+    pub sev_snp: ic_bn_lib::sev_snp::SevSnpCli,
 
     #[command(flatten, next_help_heading = "Misc")]
     pub misc: Misc,

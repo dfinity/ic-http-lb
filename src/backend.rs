@@ -10,13 +10,13 @@ use derive_new::new;
 use http::{Uri, Version, uri::PathAndQuery};
 use ic_bn_lib::{
     http::{ClientHttp, Error as HttpError, headers::strip_connection_headers},
-    tasks::Run,
-    utils::{
+    lb::{
         ChecksTarget, ExecutesRequest, TargetState,
         backend_router::BackendRouter,
         distributor::{self, Strategy},
         health_check::{self},
     },
+    tasks::Run,
 };
 use itertools::Itertools;
 use prometheus::Registry;
