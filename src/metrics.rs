@@ -136,3 +136,27 @@ pub fn setup(registry: &Registry, tasks: &mut TaskManager) -> Router {
         )
         .with_state(cache)
 }
+
+#[cfg(test)]
+mod test {
+    use http::StatusCode;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_metrics_handler_serves_cached_snapshot() {
+        let registry = Registry::new();
+        let cache = Arc::new(MetricsCache::new());
+        let runner = MetricsRunner::new(cache.clone(), &registry);
+
+        runner.update().unwrap();
+
+        let response = handler(State(cache)).await.into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).unwrap(),
+            PROMETHEUS_CONTENT_TYPE
+        );
+    }
+}

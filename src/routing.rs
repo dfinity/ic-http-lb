@@ -296,3 +296,111 @@ pub fn setup_axum_router(
         })
         .layer(middlewares)
 }
+
+#[cfg(test)]
+mod test {
+    use std::path::PathBuf;
+
+    use http::header::HOST;
+    use ic_bn_lib::http::HyperClient;
+
+    use super::*;
+
+    fn new_backend_manager() -> Arc<BackendManager> {
+        Arc::new(BackendManager::new(
+            Arc::new(HyperClient::default()),
+            PathBuf::new(),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            &Registry::new(),
+        ))
+    }
+
+    fn new_state(response_body_buffer: bool, response_body_size_limit: usize) -> HandlerState {
+        HandlerState::new(
+            new_backend_manager(),
+            false,
+            1024,
+            Duration::from_secs(1),
+            response_body_buffer,
+            response_body_size_limit,
+            Duration::from_secs(1),
+            1,
+            Duration::from_millis(1),
+            Duration::from_millis(1),
+        )
+    }
+
+    #[tokio::test]
+    async fn test_buffer_response_disabled_passes_through() {
+        let state = new_state(false, 1024);
+        let response = Response::new(Body::from(Bytes::from_static(b"hello")));
+
+        let response = buffer_response(&state, response).await;
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&body[..], b"hello");
+    }
+
+    #[tokio::test]
+    async fn test_buffer_response_buffers_small_body() {
+        let state = new_state(true, 1024);
+        let response = Response::new(Body::from(Bytes::from_static(b"hello")));
+
+        let response = buffer_response(&state, response).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&body[..], b"hello");
+    }
+
+    #[tokio::test]
+    async fn test_buffer_response_skips_body_over_limit() {
+        // Body size hint (5 bytes) exceeds the configured limit (2), so it's left untouched
+        let state = new_state(true, 2);
+        let response = Response::new(Body::from(Bytes::from_static(b"hello")));
+
+        let response = buffer_response(&state, response).await;
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&body[..], b"hello");
+    }
+
+    #[tokio::test]
+    async fn test_buffer_request_ok() {
+        let state = new_state(false, 1024);
+        let request = Request::new(Body::from(Bytes::from_static(b"payload")));
+
+        let (_, body) = buffer_request(&state, request).await.unwrap();
+        let bytes = body.collect().await.unwrap().to_bytes();
+        assert_eq!(&bytes[..], b"payload");
+    }
+
+    #[tokio::test]
+    async fn test_buffer_request_too_big() {
+        let mut state = new_state(false, 1024);
+        state.request_body_size_limit = 3;
+        let request = Request::new(Body::from(Bytes::from_static(b"payload")));
+
+        assert!(buffer_request(&state, request).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_handler_missing_authority_returns_bad_request() {
+        let state = Arc::new(new_state(false, 1024));
+        let request = Request::builder().uri("/").body(Body::empty()).unwrap();
+
+        let response = handler(State(state), request).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_handler_backend_not_ready_returns_service_unavailable() {
+        let state = Arc::new(new_state(false, 1024));
+        let request = Request::builder()
+            .uri("/")
+            .header(HOST, "example.com")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = handler(State(state), request).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+}
