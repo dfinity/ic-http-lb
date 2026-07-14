@@ -11,8 +11,7 @@ use async_trait::async_trait;
 use axum::{Router, extract::State, response::IntoResponse, routing::get};
 use bytes::{BufMut, Bytes, BytesMut};
 use http::header::CONTENT_TYPE;
-use ic_bn_lib::tasks::TaskManager;
-use ic_bn_lib_common::traits::Run;
+use ic_bn_lib::tasks::{Run, TaskManager};
 use prometheus::{Encoder, IntGauge, Registry, TextEncoder, register_int_gauge_with_registry};
 use tikv_jemalloc_ctl::{epoch, stats};
 use tokio_util::sync::CancellationToken;
@@ -136,4 +135,28 @@ pub fn setup(registry: &Registry, tasks: &mut TaskManager) -> Router {
                 .deflate(true),
         )
         .with_state(cache)
+}
+
+#[cfg(test)]
+mod test {
+    use http::StatusCode;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_metrics_handler_serves_cached_snapshot() {
+        let registry = Registry::new();
+        let cache = Arc::new(MetricsCache::new());
+        let runner = MetricsRunner::new(cache.clone(), &registry);
+
+        runner.update().unwrap();
+
+        let response = handler(State(cache)).await.into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).unwrap(),
+            PROMETHEUS_CONTENT_TYPE
+        );
+    }
 }

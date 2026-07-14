@@ -2,21 +2,20 @@ use std::sync::Arc;
 
 use anyhow::{Error, bail};
 use ic_bn_lib::{
+    custom_domains::base::cli::CustomDomainsCli,
+    dns::Options as DnsOptions,
     rustls::{
         server::{ResolvesServerCert, ServerConfig},
         version::{TLS12, TLS13},
     },
     tasks::TaskManager,
     tls::{
+        ALPN_ACME, ProvidesCertificates, TlsOptions,
         acme::alpn::{AcmeAlpn, Opts},
         prepare_server_config,
         providers::{self, Aggregator, storage},
         resolver,
     },
-};
-use ic_bn_lib_common::{
-    traits::tls::ProvidesCertificates,
-    types::{dns::Options as DnsOptions, http::ALPN_ACME, tls::TlsOptions},
 };
 use prometheus::Registry;
 
@@ -102,14 +101,14 @@ pub async fn setup(
 }
 
 async fn setup_custom_domains(
-    cli: &ic_custom_domains_base::cli::CustomDomainsCli,
+    cli: &CustomDomainsCli,
     dns_options: DnsOptions,
     metrics_registry: &Registry,
     tasks: &mut TaskManager,
     certificate_providers: &mut Vec<Arc<dyn ProvidesCertificates>>,
 ) -> Result<(), Error> {
     let token = tasks.token();
-    let (workers, _, client) = ic_custom_domains_backend::setup(
+    let (workers, _, client) = ic_bn_lib::custom_domains::backend::setup(
         cli,
         dns_options,
         token,

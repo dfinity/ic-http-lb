@@ -9,20 +9,14 @@ use axum::{body::Body, extract::Request, response::Response};
 use derive_new::new;
 use http::{Uri, Version, uri::PathAndQuery};
 use ic_bn_lib::{
-    http::headers::strip_connection_headers,
-    utils::{
+    http::{ClientHttp, Error as HttpError, headers::strip_connection_headers},
+    lb::{
+        ChecksTarget, ExecutesRequest, TargetState,
         backend_router::BackendRouter,
         distributor::{self, Strategy},
         health_check::{self},
     },
-};
-use ic_bn_lib_common::{
-    traits::{
-        Run,
-        http::ClientHttp,
-        utils::{ChecksTarget, ExecutesRequest},
-    },
-    types::{http::Error as HttpError, utils::TargetState},
+    tasks::Run,
 };
 use itertools::Itertools;
 use prometheus::Registry;
@@ -481,5 +475,169 @@ impl ExecutesRequest<Arc<Backend>> for RequestExecutor {
 
         // Execute it
         self.client.execute(req).await
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::{net::SocketAddr, path::PathBuf};
+
+    use axum::Router;
+    use http::StatusCode;
+    use ic_bn_lib::http::{HyperClient, Server, server::ServerOptions};
+    use tokio::net::TcpListener;
+
+    use super::*;
+
+    fn backend_conf(name: &str, url: &str) -> BackendConf {
+        BackendConf {
+            name: name.into(),
+            url: Url::parse(url).unwrap(),
+            enabled: true,
+            weight: 1,
+        }
+    }
+
+    fn new_manager() -> BackendManager {
+        let client = Arc::new(HyperClient::default());
+        BackendManager::new(
+            client,
+            PathBuf::new(),
+            Duration::from_millis(50),
+            Duration::from_millis(500),
+            &Registry::new(),
+        )
+    }
+
+    /// Spawns a minimal HTTP server that responds to any request (including `/health`) with 200.
+    async fn spawn_healthy_backend() -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = Server::new(
+            ic_bn_lib::network::Addr::Tcp(addr),
+            Router::new().fallback(async || StatusCode::OK),
+            ServerOptions::default(),
+            ic_bn_lib::http::server::metrics::Metrics::new(&Registry::new()),
+            None,
+        );
+
+        tokio::spawn(async move {
+            server
+                .serve_with_listener(listener.into(), CancellationToken::new())
+                .await
+                .unwrap();
+        });
+
+        addr
+    }
+
+    #[test]
+    fn test_config_default() {
+        let cfg = Config::default();
+        assert_eq!(cfg.strategy, Strategy::LeastOutstandingRequests);
+        assert!(cfg.backends.is_empty());
+        assert!(cfg.fallback.is_none());
+    }
+
+    #[test]
+    fn test_backend_from_conf_builds_health_uri() {
+        let conf = backend_conf("foo", "http://example.com:1234/base/path");
+        let backend: Backend = conf.into();
+
+        assert_eq!(backend.name, "foo");
+        assert_eq!(
+            backend.uri_health.to_string(),
+            "http://example.com:1234/health"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_set_config_rejects_duplicate_names() {
+        let bm = new_manager();
+
+        let config = Config {
+            strategy: Strategy::LeastOutstandingRequests,
+            backends: vec![backend_conf("dup", "http://127.0.0.1:1")],
+            fallback: Some(vec![backend_conf("dup", "http://127.0.0.1:2")]),
+        };
+
+        let err = bm.set_config(config).await.unwrap_err();
+        assert!(err.to_string().contains("Non-unique"));
+    }
+
+    #[tokio::test]
+    async fn test_set_config_empty_backends_ok() {
+        let bm = new_manager();
+
+        let config = Config {
+            strategy: Strategy::LeastOutstandingRequests,
+            backends: vec![],
+            fallback: None,
+        };
+
+        bm.set_config(config.clone()).await.unwrap();
+        assert_eq!(bm.get_config().await, config);
+        assert!(bm.get_backend_router().is_none());
+        assert!(bm.get_healthy_nodes().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_set_backend_state_not_found() {
+        let bm = new_manager();
+        let err = bm
+            .set_backend_state("nonexistent".into(), true)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("Backend not found"));
+    }
+
+    #[tokio::test]
+    async fn test_set_backend_state_toggle() {
+        let bm = new_manager();
+
+        // Backend is disabled initially - no health check happens
+        let config = Config {
+            strategy: Strategy::LeastOutstandingRequests,
+            backends: vec![BackendConf {
+                enabled: false,
+                ..backend_conf("foo", "http://127.0.0.1:1")
+            }],
+            fallback: None,
+        };
+        bm.set_config(config).await.unwrap();
+        assert!(bm.get_backend_router().is_none());
+
+        // Enabling it triggers a health check against a closed port -> stays unhealthy
+        bm.set_backend_state("foo".into(), true).await.unwrap();
+        assert!(bm.get_healthy_nodes().is_empty());
+        assert!(bm.get_backend_router().is_none());
+
+        // Disabling it again removes the router entirely
+        bm.set_backend_state("foo".into(), false).await.unwrap();
+        assert!(bm.get_backend_router().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_backend_router_falls_back_when_main_unhealthy() {
+        let bm = new_manager();
+        let healthy_addr = spawn_healthy_backend().await;
+
+        let config = Config {
+            strategy: Strategy::LeastOutstandingRequests,
+            backends: vec![backend_conf("main", "http://127.0.0.1:1")],
+            fallback: Some(vec![backend_conf("fb", &format!("http://{healthy_addr}"))]),
+        };
+
+        bm.set_config(config).await.unwrap();
+
+        // Main backend is unreachable, so it has no healthy nodes
+        assert!(bm.get_healthy_nodes().is_empty());
+
+        // But the router falls back to the healthy fallback backend
+        let router = bm.get_backend_router().expect("should fall back");
+        let healthy = router.get_healthy();
+        assert_eq!(healthy.len(), 1);
+        assert_eq!(healthy[0].name, "fb");
     }
 }

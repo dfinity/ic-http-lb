@@ -5,14 +5,13 @@ use std::{net::SocketAddr, path::PathBuf, time::Duration};
 use clap::{Args, Parser};
 use fqdn::FQDN;
 use humantime::parse_duration;
-use ic_bn_lib_common::{
+use ic_bn_lib::{
+    custom_domains::base::cli::CustomDomainsCli,
+    dns::cli::DnsCli,
+    http::{client::cli::HttpClientCli, middleware::waf::WafCli, server::cli::HttpServerCli},
     parse_size_usize,
-    types::{
-        acme::AcmeUrl,
-        dns::DnsCli,
-        http::{HttpClientCli, HttpServerCli, WafCli},
-        vector::VectorCli,
-    },
+    tls::acme::AcmeUrl,
+    vector::cli::VectorCli,
 };
 
 use crate::core::{AUTHOR_NAME, SERVICE_NAME};
@@ -52,7 +51,7 @@ pub struct Cli {
     pub dns: DnsCli,
 
     #[command(flatten, next_help_heading = "Custom Domains")]
-    pub custom_domains: Option<ic_custom_domains_base::cli::CustomDomainsCli>,
+    pub custom_domains: Option<CustomDomainsCli>,
 
     #[command(flatten, next_help_heading = "Certificates")]
     pub cert: Cert,
@@ -65,7 +64,7 @@ pub struct Cli {
 
     #[cfg(all(target_os = "linux", feature = "sev-snp"))]
     #[command(flatten, next_help_heading = "SEV-SNP")]
-    pub sev_snp: ic_bn_lib_common::types::utils::SevSnpCli,
+    pub sev_snp: ic_bn_lib::sev_snp::SevSnpCli,
 
     #[command(flatten, next_help_heading = "Misc")]
     pub misc: Misc,

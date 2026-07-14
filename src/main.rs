@@ -58,11 +58,14 @@ mod test {
     use clap::Parser;
     use http::StatusCode;
     use ic_bn_lib::{
-        http::Server,
+        http::{
+            Server,
+            server::{ServerOptions, metrics::Metrics},
+        },
+        network::Addr,
         reqwest,
         tests::{TEST_CERT_1, TEST_KEY_1},
     };
-    use ic_bn_lib_common::types::http::{Addr, Metrics, ServerOptions};
     use prometheus::Registry;
     use serde_json::json;
     use tempfile::tempdir;

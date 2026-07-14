@@ -3,21 +3,16 @@ use std::sync::{Arc, OnceLock};
 use anyhow::{Context, Error};
 use axum::{Router, body::Body};
 use ic_bn_lib::{
+    dns::{Options as DnsOptions, resolvers::Resolver},
     http::{
-        self as bnhttp, HyperClient, HyperClientLeastLoaded, ReqwestClient, ServerBuilder, dns,
-        middleware::waf::WafLayer, redirect_to_https,
+        self as bnhttp, ClientHttp, HyperClient, HyperClientLeastLoaded, ReqwestClient,
+        ServerBuilder, client::ClientOptions, middleware::waf::WafLayer, redirect_to_https,
+        server::metrics::Metrics,
     },
     rustls,
     tasks::TaskManager,
     tls::{prepare_client_config, verify::NoopServerCertVerifier},
     vector::{VectorOptions, client::Vector},
-};
-use ic_bn_lib_common::{
-    traits::http::ClientHttp,
-    types::{
-        dns::Options as DnsOptions,
-        http::{ClientOptions, Metrics},
-    },
 };
 use prometheus::Registry;
 use tokio::{
@@ -48,7 +43,7 @@ pub async fn main(
     cli: &Cli,
     log_handle: Handle<LevelFilter, tracing_subscriber::Registry>,
 ) -> Result<(), Error> {
-    let _ = ic_bn_lib::rustls::crypto::ring::default_provider().install_default();
+    let _ = ic_bn_lib::rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     ENV.set(cli.misc.env.clone()).unwrap();
     HOSTNAME.set(cli.misc.hostname.clone()).unwrap();
@@ -74,7 +69,7 @@ pub async fn main(
     http_client_opts.tls_config = Some(http_client_tls_config);
 
     let dns_opts: DnsOptions = (&cli.dns).into();
-    let resolver = dns::Resolver::new(dns_opts).context("unable to create DNS resolver")?;
+    let resolver = Resolver::new(dns_opts).context("unable to create DNS resolver")?;
 
     let http_client_reqwest = Arc::new(
         ReqwestClient::new(http_client_opts.clone(), Some(resolver.clone()))
