@@ -37,7 +37,7 @@ jobs:
         run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
 
       - name: Build
-        run: repro-env build --env CFLAGS="-fno-link-libatomic" -- cargo build --features sev-snp --release --target x86_64-unknown-linux-musl
+        run: repro-env build --env CFLAGS="-fno-link-libatomic" --env SOURCE_DATE_EPOCH -- cargo build --features sev-snp --release --target x86_64-unknown-linux-musl
 
       - name: Generate SHA checksum
         run: shasum target/x86_64-unknown-linux-musl/release/ic-http-lb > ic-http-lb.shasum
@@ -46,7 +46,7 @@ jobs:
         run: rm -rf target
 
       - name: Build again
-        run: repro-env build --env CFLAGS="-fno-link-libatomic" -- cargo build --features sev-snp --release --target x86_64-unknown-linux-musl
+        run: repro-env build --env CFLAGS="-fno-link-libatomic" --env SOURCE_DATE_EPOCH -- cargo build --features sev-snp --release --target x86_64-unknown-linux-musl
 
       - name: Check SHA checksum
         run: shasum -c ic-http-lb.shasum
