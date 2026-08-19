@@ -63,13 +63,18 @@ pub async fn setup(
         cli.cert.cert_provider_poll_interval,
     );
 
-    // Setup ACME ALPN for API endpoint if configured
+    // Setup ACME ALPN for the API endpoint if configured
     let api_acme_resolver: Option<Arc<dyn ResolvesServerCert>> = if cli.api.api_acme {
         let acme_alpn = Arc::new(AcmeAlpn::new(Opts {
             acme_url: cli.api.api_acme_url.clone(),
             domains: vec![cli.api.api_hostname.clone().unwrap().to_string()],
             contact: "mailto:boundary-nodes@dfinity.org".to_string(),
             cache_path: cli.api.api_acme_cache.clone().unwrap(),
+            account_credentials: cli
+                .api
+                .api_acme_account_credentials
+                .as_ref()
+                .map(|x| x.as_bytes().to_vec()),
             tls_config: None,
         }));
         tasks.add("acme_alpn", acme_alpn.clone());

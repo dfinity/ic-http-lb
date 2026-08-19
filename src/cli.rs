@@ -9,6 +9,7 @@ use ic_bn_lib::{
     custom_domains::base::cli::CustomDomainsCli,
     dns::cli::DnsCli,
     http::{client::cli::HttpClientCli, middleware::waf::WafCli, server::cli::HttpServerCli},
+    ipnet::IpNet,
     parse_size_usize,
     tls::acme::AcmeUrl,
     vector::cli::VectorCli,
@@ -102,14 +103,22 @@ pub struct Network {
 
     /// Whether to buffer request body from the client before sending it to the backend.
     /// If `retry_attempts` is >1 then this is implicitly enabled.
-    /// The body is buffered only if it's size is known and smaller than `--limits-request-body-size`
+    /// The body is buffered only if its size is known and smaller than `--limits-request-body-size`
     #[clap(env, long)]
     pub network_request_body_buffer: bool,
 
     /// Whether to buffer response body from the backend before sending it to the client.
-    /// The body is buffered only if it's size is known and smaller than `--limits-response-body-size`
+    /// The body is buffered only if its size is known and smaller than `--limits-response-body-size`
     #[clap(env, long)]
     pub network_response_body_buffer: bool,
+
+    /// Trust `x-request-id` header from these networks.
+    #[clap(env, long, value_delimiter = ',')]
+    pub network_trust_x_request_id_from: Vec<IpNet>,
+
+    /// Trust `x-real-ip` header from these networks.
+    #[clap(env, long, value_delimiter = ',')]
+    pub network_trust_x_real_ip_from: Vec<IpNet>,
 }
 
 #[derive(Args)]
@@ -141,6 +150,10 @@ pub struct Api {
     /// Path to a folder where to store ACME cache (account, certificates etc)
     #[clap(env, long)]
     pub api_acme_cache: Option<PathBuf>,
+
+    /// ACME account credentials. If unspecified - new one will be created.
+    #[clap(env)]
+    pub api_acme_account_credentials: Option<String>,
 }
 
 #[derive(Args)]
@@ -255,6 +268,10 @@ pub struct Misc {
     /// If not specified - tries to obtain it.
     #[clap(env, long, default_value = hostname::get().unwrap().into_string().unwrap())]
     pub hostname: String,
+
+    /// Path to a GeoIP database
+    #[clap(env, long)]
+    pub geoip_db: Option<PathBuf>,
 
     /// Number of Tokio threads to use to serve requests.
     /// Defaults to the number of CPUs

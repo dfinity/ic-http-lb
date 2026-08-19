@@ -13,15 +13,17 @@ use axum::{
     middleware::Next,
     response::Response,
 };
-use bytes::Bytes;
 use derive_new::new;
-use http::{HeaderValue, StatusCode};
+use http::StatusCode;
 use ic_bn_lib::{
-    dyn_event,
+    SerializeOption, dyn_event,
     http::{
-        extract_authority, headers::X_REAL_IP, http_method, http_version, server::conn::ConnInfo,
+        extract_authority, http_method, http_version,
+        middleware::{RemoteAddr, RequestId, request_meta::CountryCode},
+        server::conn::ConnInfo,
     },
     network::TlsInfo,
+    show_option::ShowOption,
     vector::client::Vector,
 };
 use prometheus::{
@@ -35,7 +37,6 @@ use tracing::Level;
 use crate::{
     backend::{REQUEST_CONTEXT, RequestContext},
     core::{ENV, HOSTNAME},
-    middleware::request_id::RequestId,
     routing::Retries,
 };
 
@@ -120,7 +121,7 @@ pub async fn middleware(
         .map(|x| x.to_string())
         .unwrap_or_default();
     let request_size = request.body().size_hint().exact().map_or(-1, |x| x as i64);
-    let remote_addr = conn_info.remote_addr.ip().to_canonical().to_string();
+    let remote_addr = request.extensions().get::<RemoteAddr>().copied();
     let timestamp = time::OffsetDateTime::now_utc();
     let (tls_version, tls_cipher, tls_handshake) =
         tls_info.as_ref().map_or(("", "", Duration::ZERO), |x| {
@@ -130,11 +131,7 @@ pub async fn middleware(
                 x.handshake_dur,
             )
         });
-
-    request.headers_mut().insert(
-        X_REAL_IP,
-        HeaderValue::from_maybe_shared(Bytes::from(remote_addr.clone())).unwrap(),
-    );
+    let country_code = request.extensions_mut().remove::<CountryCode>();
 
     // Channels to send response metadata to the background task
     let (tx, rx) = oneshot::channel();
@@ -189,7 +186,7 @@ pub async fn middleware(
                 method,
                 path,
                 query,
-                remote_addr,
+                remote_addr = %remote_addr.show_or(""),
                 status = meta.status.as_str(),
                 duration = meta.duration,
                 backend,
@@ -198,6 +195,7 @@ pub async fn middleware(
                 response_size = meta.size,
                 response_body_buffered = meta.ctx.response_body_buffered,
                 retries = meta.retries,
+                country_code = %country_code.show_or(""),
             );
         }
 
@@ -219,12 +217,13 @@ pub async fn middleware(
                 "status": meta.status.as_u16(),
                 "duration": meta.duration,
                 "backend": backend,
-                "remote_addr": remote_addr,
+                "remote_addr": remote_addr.serialize_or(""),
                 "request_body_buffered": meta.ctx.request_body_buffered,
                 "request_size": request_size,
                 "response_body_buffered": meta.ctx.response_body_buffered,
                 "response_size": meta.size,
                 "retries": meta.retries,
+                "country_code": country_code.serialize_or(""),
             });
 
             v.send(event);
