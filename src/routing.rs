@@ -1,12 +1,12 @@
 use std::{sync::Arc, time::Duration};
 
-use anyhow::{Error, anyhow};
+use anyhow::{Context, Error, anyhow};
 use axum::{
     Router,
     body::{Body, HttpBody as _},
     extract::{Request, State},
     handler::Handler,
-    middleware::{from_fn, from_fn_with_state},
+    middleware::from_fn_with_state,
     response::{IntoResponse, Response},
 };
 use axum_extra::middleware::option_layer;
@@ -16,8 +16,10 @@ use http::{HeaderValue, StatusCode, request::Parts};
 use http_body_util::{BodyExt, Full, Limited};
 use ic_bn_lib::{
     http::{
-        body::buffer_body, extract_authority, extract_host, headers::X_FORWARDED_HOST,
-        middleware::waf::WafLayer,
+        body::buffer_body,
+        extract_authority, extract_host,
+        headers::X_FORWARDED_HOST,
+        middleware::{request_meta, waf::WafLayer},
     },
     lb::backend_router::Error as BackendRouterError,
     vector::client::Vector,
@@ -244,7 +246,7 @@ pub fn setup_axum_router(
     vector: Option<Arc<Vector>>,
     registry: &Registry,
     waf_layer: Option<WafLayer>,
-) -> Router {
+) -> anyhow::Result<Router> {
     let state = Arc::new(HandlerState::new(
         backend_manager,
         cli.network.network_request_body_buffer,
@@ -268,14 +270,24 @@ pub fn setup_axum_router(
     ));
 
     let middlewares = ServiceBuilder::new()
-        .layer(from_fn(middleware::request_id::middleware))
+        .layer(from_fn_with_state(
+            Arc::new(
+                request_meta::RequestMetaState::new_with_geoip(
+                    cli.network.network_trust_x_real_ip_from.clone(),
+                    cli.network.network_trust_x_request_id_from.clone(),
+                    cli.misc.geoip_db.clone(),
+                )
+                .context("unable to build RequestMeta state")?,
+            ),
+            request_meta::middleware,
+        ))
         .layer(from_fn_with_state(
             metrics_state,
             middleware::metrics::middleware,
         ))
         .layer(option_layer(waf_layer));
 
-    Router::new()
+    Ok(Router::new()
         .fallback(|request: Request| async move {
             let Some(host) = extract_authority(&request) else {
                 return Ok((StatusCode::BAD_REQUEST, "Unable to extract authority").into_response());
@@ -294,7 +306,7 @@ pub fn setup_axum_router(
 
             Ok(handler.call(request, state).await)
         })
-        .layer(middlewares)
+        .layer(middlewares))
 }
 
 #[cfg(test)]

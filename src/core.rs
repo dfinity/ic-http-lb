@@ -140,7 +140,8 @@ pub async fn main(
         vector.clone(),
         &registry,
         waf_layer,
-    );
+    )
+    .context("unable to create Axum Router")?;
 
     // HTTP server metrics
     let http_metrics = Metrics::new(&registry);
