@@ -1,3 +1,5 @@
+#![allow(clippy::enum_variant_names)]
+
 use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context, Error, anyhow};
@@ -25,9 +27,10 @@ use ic_bn_lib::{
     vector::client::Vector,
 };
 use prometheus::Registry;
+use strum::IntoStaticStr;
 use tokio::time::{sleep, timeout};
 use tower::{ServiceBuilder, ServiceExt};
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::{
     backend::{BackendManager, REQUEST_CONTEXT},
@@ -37,6 +40,41 @@ use crate::{
         metrics::{Metrics, MetricsState},
     },
 };
+
+#[derive(Clone, Debug, thiserror::Error, IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum ErrorCause {
+    #[error("Backend request error: {0}")]
+    BackendRequestError(String),
+    #[error("Backend body error: {0}")]
+    BackendBodyError(String),
+    #[error("Backend timeout")]
+    BackendTimeout,
+    #[error("No authority")]
+    NoAuthority,
+    #[error("Service not ready")]
+    ServiceNotReady,
+    #[error("No healthy backends available")]
+    NoHealthyBackends,
+    #[error("Timed out buffering the request body")]
+    RequestBodyBufferTimeout,
+}
+
+impl IntoResponse for ErrorCause {
+    fn into_response(self) -> Response {
+        let status = match self {
+            Self::BackendRequestError(_) | Self::BackendBodyError(_) => StatusCode::BAD_GATEWAY,
+            Self::BackendTimeout => StatusCode::GATEWAY_TIMEOUT,
+            Self::NoAuthority => StatusCode::BAD_REQUEST,
+            Self::ServiceNotReady | Self::NoHealthyBackends => StatusCode::SERVICE_UNAVAILABLE,
+            Self::RequestBodyBufferTimeout => StatusCode::REQUEST_TIMEOUT,
+        };
+
+        let mut response = (status, self.to_string()).into_response();
+        response.extensions_mut().insert(self);
+        response
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Retries(pub u8);
@@ -113,25 +151,18 @@ async fn buffer_response(state: &HandlerState, response: Response) -> Response {
     let body = Limited::new(body, state.response_body_size_limit);
     let Ok(body) = timeout(state.response_body_timeout, body.collect()).await else {
         info!("Timed out reading response body from backend '{backend}'");
-        return (
-            StatusCode::GATEWAY_TIMEOUT,
-            "Timed out reading response body from the backend",
-        )
-            .into_response();
+        return ErrorCause::BackendTimeout.into_response();
     };
 
     let body = match body {
         Ok(v) => Body::from(v.to_bytes()),
         Err(e) => {
+            let resp = ErrorCause::BackendBodyError(e.to_string()).into_response();
             info!(
                 "Unable to read response body from backend '{backend}': {:#}",
                 anyhow!(e)
             );
-            return (
-                StatusCode::BAD_GATEWAY,
-                "Error reading response body from the backend",
-            )
-                .into_response();
+            return resp;
         }
     };
 
@@ -145,11 +176,11 @@ async fn buffer_response(state: &HandlerState, response: Response) -> Response {
 
 pub async fn handler(State(state): State<Arc<HandlerState>>, mut request: Request) -> Response {
     let Some(host) = extract_authority(&request).map(|x| x.to_string()) else {
-        return (StatusCode::BAD_REQUEST, "Unable to extract authority").into_response();
+        return ErrorCause::NoAuthority.into_response();
     };
 
     let Some(backend_router) = state.backend_manager.get_backend_router() else {
-        return (StatusCode::SERVICE_UNAVAILABLE, "Service is not yet ready").into_response();
+        return ErrorCause::ServiceNotReady.into_response();
     };
 
     request.headers_mut().insert(
@@ -175,15 +206,12 @@ pub async fn handler(State(state): State<Arc<HandlerState>>, mut request: Reques
     if !request_should_buffer {
         let response = match backend_router.execute(request).await {
             Err(BackendRouterError::NoHealthyNodes) => {
-                "No healthy HTTP gateways available".into_response()
+                info!("Unable to execute the request: No healthy backends available");
+                return ErrorCause::NoHealthyBackends.into_response();
             }
             Err(BackendRouterError::Inner(e)) => {
-                info!("Unable to execute the request: {:#}", anyhow!(e));
-                (
-                    StatusCode::BAD_GATEWAY,
-                    "Unable to execute the request to the backend",
-                )
-                    .into_response()
+                info!("Unable to execute the request: {e:#}");
+                return ErrorCause::BackendRequestError(e.to_string()).into_response();
             }
             Ok(v) => v,
         };
@@ -193,7 +221,7 @@ pub async fn handler(State(state): State<Arc<HandlerState>>, mut request: Reques
 
     // Buffer the request body
     let Ok((parts, body)) = buffer_request(&state, request).await else {
-        return (StatusCode::REQUEST_TIMEOUT, "Unable to buffer body").into_response();
+        return ErrorCause::RequestBodyBufferTimeout.into_response();
     };
 
     // Store the flag for the metrics
@@ -208,17 +236,17 @@ pub async fn handler(State(state): State<Arc<HandlerState>>, mut request: Reques
         let body = Body::new(body.clone());
         let request = Request::from_parts(parts.clone(), body);
 
-        let error = match backend_router.execute(request).await {
+        let error_response = match backend_router.execute(request).await {
             Err(BackendRouterError::NoHealthyNodes) => {
+                info!("Unable to execute the request: No healthy backends available");
                 sleep(state.retry_interval_no_healthy_nodes).await;
-                "No healthy HTTP gateways available".into()
+                ErrorCause::NoHealthyBackends.into_response()
             }
             Err(BackendRouterError::Inner(e)) => {
-                let e = format!("Error: {:#}", anyhow!(e));
-                warn!("{e}");
+                info!("Unable to execute the request: {e:#}");
                 sleep(delay).await;
                 delay *= 2;
-                e
+                ErrorCause::BackendRequestError(e.to_string()).into_response()
             }
             Ok(v) => {
                 break v;
@@ -227,7 +255,7 @@ pub async fn handler(State(state): State<Arc<HandlerState>>, mut request: Reques
 
         retries -= 1;
         if retries == 0 {
-            return (StatusCode::SERVICE_UNAVAILABLE, error).into_response();
+            return error_response;
         }
     };
 
@@ -290,7 +318,7 @@ pub fn setup_axum_router(
     Ok(Router::new()
         .fallback(|request: Request| async move {
             let Some(host) = extract_authority(&request) else {
-                return Ok((StatusCode::BAD_REQUEST, "Unable to extract authority").into_response());
+                return Ok(ErrorCause::NoAuthority.into_response());
             };
 
             // See if we have API enabled
