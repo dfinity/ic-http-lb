@@ -157,12 +157,8 @@ async fn buffer_response(state: &HandlerState, response: Response) -> Response {
     let body = match body {
         Ok(v) => Body::from(v.to_bytes()),
         Err(e) => {
-            let resp = ErrorCause::BackendBodyError(e.to_string()).into_response();
-            info!(
-                "Unable to read response body from backend '{backend}': {:#}",
-                anyhow!(e)
-            );
-            return resp;
+            info!("Unable to read response body from backend '{backend}': {e:#}");
+            return ErrorCause::BackendBodyError(format!("{e:#}")).into_response();
         }
     };
 
@@ -211,7 +207,7 @@ pub async fn handler(State(state): State<Arc<HandlerState>>, mut request: Reques
             }
             Err(BackendRouterError::Inner(e)) => {
                 info!("Unable to execute the request: {e:#}");
-                return ErrorCause::BackendRequestError(e.to_string()).into_response();
+                return ErrorCause::BackendRequestError(format!("{e:#}")).into_response();
             }
             Ok(v) => v,
         };
@@ -246,7 +242,7 @@ pub async fn handler(State(state): State<Arc<HandlerState>>, mut request: Reques
                 info!("Unable to execute the request: {e:#}");
                 sleep(delay).await;
                 delay *= 2;
-                ErrorCause::BackendRequestError(e.to_string()).into_response()
+                ErrorCause::BackendRequestError(format!("{e:#}")).into_response()
             }
             Ok(v) => {
                 break v;
