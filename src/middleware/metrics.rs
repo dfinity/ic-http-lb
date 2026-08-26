@@ -175,10 +175,12 @@ pub async fn middleware(
             None
         };
 
-        let error_cause: &'static str = meta.error_cause.as_ref().map_or("", |x| x.into());
-        let error_details = meta
-            .error_cause
-            .map_or_else(String::new, |x| format!("{x:#}"));
+        let (error_cause, error_details) =
+            meta.error_cause.as_ref().map_or(("", String::new()), |x| {
+                let cause: &'static str = x.into();
+                let details = format!("{x:#}");
+                (cause, details)
+            });
 
         if let Some(v) = log_level {
             dyn_event!(
