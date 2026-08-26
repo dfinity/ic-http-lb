@@ -37,7 +37,7 @@ use tracing::Level;
 use crate::{
     backend::{REQUEST_CONTEXT, RequestContext},
     core::{ENV, HOSTNAME},
-    routing::Retries,
+    routing::{ErrorCause, Retries},
 };
 
 pub const HTTP_DURATION_BUCKETS: &[f64] = &[0.05, 0.2, 1.0, 2.0];
@@ -76,6 +76,7 @@ impl Metrics {
 struct ResponseMeta {
     ctx: RequestContext,
     status: StatusCode,
+    error_cause: Option<ErrorCause>,
     duration: f64,
     size: i64,
     retries: u8,
@@ -86,6 +87,7 @@ impl Default for ResponseMeta {
         Self {
             ctx: RequestContext::default(),
             status: StatusCode::REQUEST_TIMEOUT,
+            error_cause: None,
             duration: 0.0,
             size: 0,
             retries: 0,
@@ -173,6 +175,13 @@ pub async fn middleware(
             None
         };
 
+        let (error_cause, error_details) =
+            meta.error_cause.as_ref().map_or(("", String::new()), |x| {
+                let cause: &'static str = x.into();
+                let details = format!("{x:#}");
+                (cause, details)
+            });
+
         if let Some(v) = log_level {
             dyn_event!(
                 v,
@@ -196,6 +205,8 @@ pub async fn middleware(
                 response_body_buffered = meta.ctx.response_body_buffered,
                 retries = meta.retries,
                 country_code = %country_code.show_or(""),
+                error_cause,
+                error_details,
             );
         }
 
@@ -224,6 +235,8 @@ pub async fn middleware(
                 "response_size": meta.size,
                 "retries": meta.retries,
                 "country_code": country_code.serialize_or(""),
+                "error_cause": error_cause,
+                "error_details": error_details,
             });
 
             v.send(event);
@@ -248,11 +261,13 @@ pub async fn middleware(
         .map(|x| x.0)
         .unwrap_or_default();
     let status = response.status();
+    let error_cause = response.extensions_mut().remove::<ErrorCause>();
 
     // Send the meta to the logging task
     let _ = tx.send(ResponseMeta {
         ctx,
         status,
+        error_cause,
         size: response_size,
         duration,
         retries,

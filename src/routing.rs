@@ -1,3 +1,5 @@
+#![allow(clippy::enum_variant_names)]
+
 use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context, Error, anyhow};
@@ -25,9 +27,10 @@ use ic_bn_lib::{
     vector::client::Vector,
 };
 use prometheus::Registry;
+use strum::IntoStaticStr;
 use tokio::time::{sleep, timeout};
 use tower::{ServiceBuilder, ServiceExt};
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::{
     backend::{BackendManager, REQUEST_CONTEXT},
@@ -37,6 +40,41 @@ use crate::{
         metrics::{Metrics, MetricsState},
     },
 };
+
+#[derive(Clone, Debug, thiserror::Error, IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum ErrorCause {
+    #[error("Backend request error: {0}")]
+    BackendRequestError(String),
+    #[error("Backend body error: {0}")]
+    BackendBodyError(String),
+    #[error("Backend timeout")]
+    BackendTimeout,
+    #[error("No authority")]
+    NoAuthority,
+    #[error("Service not ready")]
+    ServiceNotReady,
+    #[error("No healthy backends available")]
+    NoHealthyBackends,
+    #[error("Timed out buffering the request body")]
+    RequestBodyBufferTimeout,
+}
+
+impl IntoResponse for ErrorCause {
+    fn into_response(self) -> Response {
+        let status = match self {
+            Self::BackendRequestError(_) | Self::BackendBodyError(_) => StatusCode::BAD_GATEWAY,
+            Self::BackendTimeout => StatusCode::GATEWAY_TIMEOUT,
+            Self::NoAuthority => StatusCode::BAD_REQUEST,
+            Self::ServiceNotReady | Self::NoHealthyBackends => StatusCode::SERVICE_UNAVAILABLE,
+            Self::RequestBodyBufferTimeout => StatusCode::REQUEST_TIMEOUT,
+        };
+
+        let mut response = (status, self.to_string()).into_response();
+        response.extensions_mut().insert(self);
+        response
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Retries(pub u8);
@@ -113,25 +151,14 @@ async fn buffer_response(state: &HandlerState, response: Response) -> Response {
     let body = Limited::new(body, state.response_body_size_limit);
     let Ok(body) = timeout(state.response_body_timeout, body.collect()).await else {
         info!("Timed out reading response body from backend '{backend}'");
-        return (
-            StatusCode::GATEWAY_TIMEOUT,
-            "Timed out reading response body from the backend",
-        )
-            .into_response();
+        return ErrorCause::BackendTimeout.into_response();
     };
 
     let body = match body {
         Ok(v) => Body::from(v.to_bytes()),
         Err(e) => {
-            info!(
-                "Unable to read response body from backend '{backend}': {:#}",
-                anyhow!(e)
-            );
-            return (
-                StatusCode::BAD_GATEWAY,
-                "Error reading response body from the backend",
-            )
-                .into_response();
+            info!("Unable to read response body from backend '{backend}': {e:#}");
+            return ErrorCause::BackendBodyError(format!("{e:#}")).into_response();
         }
     };
 
@@ -145,11 +172,11 @@ async fn buffer_response(state: &HandlerState, response: Response) -> Response {
 
 pub async fn handler(State(state): State<Arc<HandlerState>>, mut request: Request) -> Response {
     let Some(host) = extract_authority(&request).map(|x| x.to_string()) else {
-        return (StatusCode::BAD_REQUEST, "Unable to extract authority").into_response();
+        return ErrorCause::NoAuthority.into_response();
     };
 
     let Some(backend_router) = state.backend_manager.get_backend_router() else {
-        return (StatusCode::SERVICE_UNAVAILABLE, "Service is not yet ready").into_response();
+        return ErrorCause::ServiceNotReady.into_response();
     };
 
     request.headers_mut().insert(
@@ -175,15 +202,12 @@ pub async fn handler(State(state): State<Arc<HandlerState>>, mut request: Reques
     if !request_should_buffer {
         let response = match backend_router.execute(request).await {
             Err(BackendRouterError::NoHealthyNodes) => {
-                "No healthy HTTP gateways available".into_response()
+                info!("Unable to execute the request: No healthy backends available");
+                return ErrorCause::NoHealthyBackends.into_response();
             }
             Err(BackendRouterError::Inner(e)) => {
-                info!("Unable to execute the request: {:#}", anyhow!(e));
-                (
-                    StatusCode::BAD_GATEWAY,
-                    "Unable to execute the request to the backend",
-                )
-                    .into_response()
+                info!("Unable to execute the request: {e:#}");
+                return ErrorCause::BackendRequestError(format!("{e:#}")).into_response();
             }
             Ok(v) => v,
         };
@@ -193,7 +217,7 @@ pub async fn handler(State(state): State<Arc<HandlerState>>, mut request: Reques
 
     // Buffer the request body
     let Ok((parts, body)) = buffer_request(&state, request).await else {
-        return (StatusCode::REQUEST_TIMEOUT, "Unable to buffer body").into_response();
+        return ErrorCause::RequestBodyBufferTimeout.into_response();
     };
 
     // Store the flag for the metrics
@@ -208,17 +232,17 @@ pub async fn handler(State(state): State<Arc<HandlerState>>, mut request: Reques
         let body = Body::new(body.clone());
         let request = Request::from_parts(parts.clone(), body);
 
-        let error = match backend_router.execute(request).await {
+        let error_response = match backend_router.execute(request).await {
             Err(BackendRouterError::NoHealthyNodes) => {
+                info!("Unable to execute the request: No healthy backends available");
                 sleep(state.retry_interval_no_healthy_nodes).await;
-                "No healthy HTTP gateways available".into()
+                ErrorCause::NoHealthyBackends.into_response()
             }
             Err(BackendRouterError::Inner(e)) => {
-                let e = format!("Error: {:#}", anyhow!(e));
-                warn!("{e}");
+                info!("Unable to execute the request: {e:#}");
                 sleep(delay).await;
                 delay *= 2;
-                e
+                ErrorCause::BackendRequestError(format!("{e:#}")).into_response()
             }
             Ok(v) => {
                 break v;
@@ -227,7 +251,7 @@ pub async fn handler(State(state): State<Arc<HandlerState>>, mut request: Reques
 
         retries -= 1;
         if retries == 0 {
-            return (StatusCode::SERVICE_UNAVAILABLE, error).into_response();
+            return error_response;
         }
     };
 
@@ -290,7 +314,7 @@ pub fn setup_axum_router(
     Ok(Router::new()
         .fallback(|request: Request| async move {
             let Some(host) = extract_authority(&request) else {
-                return Ok((StatusCode::BAD_REQUEST, "Unable to extract authority").into_response());
+                return Ok(ErrorCause::NoAuthority.into_response());
             };
 
             // See if we have API enabled
@@ -311,10 +335,19 @@ pub fn setup_axum_router(
 
 #[cfg(test)]
 mod test {
-    use std::path::PathBuf;
+    use std::{net::SocketAddr, path::PathBuf};
 
     use http::header::HOST;
     use ic_bn_lib::http::HyperClient;
+    use serde_json::json;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+    use tokio_util::io::ReaderStream;
+    use url::Url;
+
+    use crate::backend::{BackendConf, Config};
 
     use super::*;
 
@@ -326,6 +359,92 @@ mod test {
             Duration::from_secs(1),
             &Registry::new(),
         ))
+    }
+
+    fn backend_conf(name: &str, url: &str) -> BackendConf {
+        BackendConf {
+            name: name.into(),
+            url: Url::parse(url).unwrap(),
+            enabled: true,
+            weight: 1,
+        }
+    }
+
+    // `Config`'s fields are private to the `backend` module, so it can only be built here
+    // through its `Deserialize` impl rather than a struct literal.
+    fn new_config(backends: &[BackendConf], fallback: Option<&[BackendConf]>) -> Config {
+        serde_json::from_value(json!({
+            "strategy": "least_outstanding_requests",
+            "backends": backends,
+            "fallback": fallback,
+        }))
+        .unwrap()
+    }
+
+    #[derive(Clone, Copy)]
+    enum FakeBackendBehavior {
+        /// Drops the connection without responding, simulating a backend that refuses requests.
+        Drop,
+        /// Sends response headers promising more data than it ever sends, then never closes.
+        StallBody,
+        /// Sends response headers promising more data than it ever sends, then closes.
+        TruncateBody,
+    }
+
+    /// Spawns a minimal HTTP/1.1 server that answers `/health` with 200 OK and reacts to any
+    /// other request according to `behavior`, to exercise backend failure modes deterministically.
+    async fn spawn_fake_backend(behavior: FakeBackendBehavior) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    loop {
+                        while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                            let mut chunk = [0u8; 512];
+                            match socket.read(&mut chunk).await {
+                                Ok(n) if n > 0 => buf.extend_from_slice(&chunk[..n]),
+                                _ => return,
+                            }
+                        }
+
+                        let is_health = buf.starts_with(b"GET /health");
+                        buf.clear();
+
+                        if is_health {
+                            if socket
+                                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                                .await
+                                .is_err()
+                            {
+                                return;
+                            }
+                            continue;
+                        }
+
+                        match behavior {
+                            FakeBackendBehavior::Drop => return,
+                            FakeBackendBehavior::StallBody => {
+                                let _ = socket
+                                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhi")
+                                    .await;
+                                std::future::pending::<()>().await;
+                            }
+                            FakeBackendBehavior::TruncateBody => {
+                                let _ = socket
+                                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhi")
+                                    .await;
+                                return;
+                            }
+                        }
+                    }
+                });
+            }
+        });
+
+        addr
     }
 
     fn new_state(response_body_buffer: bool, response_body_size_limit: usize) -> HandlerState {
@@ -341,6 +460,53 @@ mod test {
             Duration::from_millis(1),
             Duration::from_millis(1),
         )
+    }
+
+    #[tokio::test]
+    async fn test_error_cause_into_response() {
+        let cases: Vec<(ErrorCause, StatusCode)> = vec![
+            (
+                ErrorCause::BackendRequestError("connection refused".into()),
+                StatusCode::BAD_GATEWAY,
+            ),
+            (
+                ErrorCause::BackendBodyError("unexpected eof".into()),
+                StatusCode::BAD_GATEWAY,
+            ),
+            (ErrorCause::BackendTimeout, StatusCode::GATEWAY_TIMEOUT),
+            (ErrorCause::NoAuthority, StatusCode::BAD_REQUEST),
+            (ErrorCause::ServiceNotReady, StatusCode::SERVICE_UNAVAILABLE),
+            (
+                ErrorCause::NoHealthyBackends,
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                ErrorCause::RequestBodyBufferTimeout,
+                StatusCode::REQUEST_TIMEOUT,
+            ),
+        ];
+
+        for (err, expected_status) in cases {
+            let expected_name: &'static str = (&err).into();
+            let expected_text = err.to_string();
+
+            let response = err.into_response();
+            assert_eq!(response.status(), expected_status);
+
+            let (actual_name, actual_text) = {
+                let ext = response
+                    .extensions()
+                    .get::<ErrorCause>()
+                    .expect("ErrorCause extension should be set");
+                let name: &'static str = ext.into();
+                (name, ext.to_string())
+            };
+            assert_eq!(actual_name, expected_name);
+            assert_eq!(actual_text, expected_text);
+
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(body, Bytes::from(expected_text));
+        }
     }
 
     #[tokio::test]
@@ -401,6 +567,10 @@ mod test {
 
         let response = handler(State(state), request).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(matches!(
+            response.extensions().get::<ErrorCause>(),
+            Some(ErrorCause::NoAuthority)
+        ));
     }
 
     #[tokio::test]
@@ -414,5 +584,166 @@ mod test {
 
         let response = handler(State(state), request).await;
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(matches!(
+            response.extensions().get::<ErrorCause>(),
+            Some(ErrorCause::ServiceNotReady)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_handler_no_healthy_backends_returns_service_unavailable() {
+        let bm = new_backend_manager();
+        bm.set_config(new_config(
+            &[],
+            Some(&[backend_conf("fallback", "http://127.0.0.1:1")]),
+        ))
+        .await
+        .unwrap();
+
+        let mut state = new_state(false, 1024);
+        state.backend_manager = bm;
+        let state = Arc::new(state);
+
+        let request = Request::builder()
+            .uri("/")
+            .header(HOST, "example.com")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = handler(State(state), request).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(matches!(
+            response.extensions().get::<ErrorCause>(),
+            Some(ErrorCause::NoHealthyBackends)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_handler_backend_request_error_returns_bad_gateway() {
+        let addr = spawn_fake_backend(FakeBackendBehavior::Drop).await;
+
+        let bm = new_backend_manager();
+        bm.set_config(new_config(
+            &[backend_conf("main", &format!("http://{addr}"))],
+            None,
+        ))
+        .await
+        .unwrap();
+
+        let mut state = new_state(false, 1024);
+        state.backend_manager = bm;
+        let state = Arc::new(state);
+
+        let request = Request::builder()
+            .uri("/")
+            .header(HOST, "example.com")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = handler(State(state), request).await;
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert!(matches!(
+            response.extensions().get::<ErrorCause>(),
+            Some(ErrorCause::BackendRequestError(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_handler_backend_timeout_returns_gateway_timeout() {
+        let addr = spawn_fake_backend(FakeBackendBehavior::StallBody).await;
+
+        let bm = new_backend_manager();
+        bm.set_config(new_config(
+            &[backend_conf("main", &format!("http://{addr}"))],
+            None,
+        ))
+        .await
+        .unwrap();
+
+        let mut state = new_state(true, 1024);
+        state.backend_manager = bm;
+        state.response_body_timeout = Duration::from_millis(50);
+        let state = Arc::new(state);
+
+        let request = Request::builder()
+            .uri("/")
+            .header(HOST, "example.com")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = handler(State(state), request).await;
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+        assert!(matches!(
+            response.extensions().get::<ErrorCause>(),
+            Some(ErrorCause::BackendTimeout)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_handler_backend_body_error_returns_bad_gateway() {
+        let addr = spawn_fake_backend(FakeBackendBehavior::TruncateBody).await;
+
+        let bm = new_backend_manager();
+        bm.set_config(new_config(
+            &[backend_conf("main", &format!("http://{addr}"))],
+            None,
+        ))
+        .await
+        .unwrap();
+
+        let mut state = new_state(true, 1024);
+        state.backend_manager = bm;
+        let state = Arc::new(state);
+
+        let request = Request::builder()
+            .uri("/")
+            .header(HOST, "example.com")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = handler(State(state), request).await;
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert!(matches!(
+            response.extensions().get::<ErrorCause>(),
+            Some(ErrorCause::BackendBodyError(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_handler_request_body_buffer_timeout_returns_request_timeout() {
+        let bm = new_backend_manager();
+        bm.set_config(new_config(
+            &[],
+            Some(&[backend_conf("fallback", "http://127.0.0.1:1")]),
+        ))
+        .await
+        .unwrap();
+
+        let mut state = new_state(false, 1024);
+        state.backend_manager = bm;
+        state.request_body_buffer = true;
+        state.request_body_timeout = Duration::from_millis(50);
+        let state = Arc::new(state);
+
+        // A body that reports a known, tiny exact size (via `Limited`'s own size-hint logic, so
+        // that `handler()` decides to buffer it) but never actually yields any data, so buffering
+        // it genuinely times out. The duplex's other end is kept alive and never written to, so
+        // reads on `client` stall forever instead of hitting EOF.
+        let (client, _server) = tokio::io::duplex(4);
+        let stream = ReaderStream::new(client);
+        let body = Body::new(Limited::new(Body::from_stream(stream), 0));
+
+        let request = Request::builder()
+            .uri("/")
+            .header(HOST, "example.com")
+            .body(body)
+            .unwrap();
+
+        let response = handler(State(state), request).await;
+        assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+        assert!(matches!(
+            response.extensions().get::<ErrorCause>(),
+            Some(ErrorCause::RequestBodyBufferTimeout)
+        ));
     }
 }
