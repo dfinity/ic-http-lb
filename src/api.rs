@@ -11,7 +11,10 @@ use axum::{
 use bytes::Bytes;
 use derive_new::new;
 use http::{StatusCode, header::AUTHORIZATION};
-use ic_bn_lib::http::middleware::waf::{self, WafLayer};
+use ic_bn_lib::http::middleware::{
+    rate_limiter::{Bypasser, NeverBypasser, TokenBypasser},
+    waf::{self, WafLayer},
+};
 use tracing::{Level, warn};
 use tracing_core::LevelFilter;
 use tracing_subscriber::{Registry, reload::Handle};
@@ -212,7 +215,7 @@ pub fn setup_api_axum_router(
                         StatusCode::TOO_MANY_REQUESTS,
                         "Too many requests, try again later",
                     ),
-                    None,
+                    NeverBypasser,
                 )?),
         );
     }
