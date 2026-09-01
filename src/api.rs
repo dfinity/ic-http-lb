@@ -195,6 +195,8 @@ pub fn setup_api_axum_router(
 
     #[cfg(all(target_os = "linux", feature = "sev-snp"))]
     if cli.sev_snp.sev_snp_enable {
+        use ic_bn_lib::http::middleware::rate_limiter::NeverBypasser;
+
         router = router.route(
             "/sev-snp/report",
             post(ic_bn_lib::sev_snp::handler)
@@ -212,7 +214,7 @@ pub fn setup_api_axum_router(
                         StatusCode::TOO_MANY_REQUESTS,
                         "Too many requests, try again later",
                     ),
-                    None,
+                    NeverBypasser,
                 )?),
         );
     }
