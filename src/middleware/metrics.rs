@@ -17,9 +17,10 @@ use derive_new::new;
 use http::StatusCode;
 use ic_bn_lib::{
     SerializeOption, dyn_event,
+    geoip::CountryCode,
     http::{
         extract_authority, http_method, http_version,
-        middleware::{RemoteAddr, RequestId, request_meta::CountryCode},
+        middleware::{RemoteAddr, RequestId},
         server::conn::ConnInfo,
     },
     network::TlsInfo,
