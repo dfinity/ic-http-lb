@@ -55,16 +55,16 @@ impl Metrics {
 
         Self {
             requests: register_int_counter_vec_with_registry!(
-                format!("http_requests"),
-                format!("Counts occurrences of requests"),
+                "http_requests",
+                "Counts occurrences of requests",
                 LABELS_HTTP,
                 registry
             )
             .unwrap(),
 
             duration: register_histogram_vec_with_registry!(
-                format!("http_requests_duration_sec"),
-                format!("Records the duration of request processing in seconds"),
+                "http_requests_duration_sec",
+                "Records the duration of request processing in seconds",
                 LABELS_HTTP,
                 HTTP_DURATION_BUCKETS.to_vec(),
                 registry

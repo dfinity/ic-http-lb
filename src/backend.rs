@@ -536,7 +536,7 @@ mod test {
     fn test_config_default() {
         let cfg = Config::default();
         assert_eq!(cfg.strategy, Strategy::LeastOutstandingRequests);
-        assert!(cfg.backends.is_empty());
+        assert_eq!(cfg.backends, Vec::<BackendConf>::new());
         assert!(cfg.fallback.is_none());
     }
 
