@@ -24,11 +24,11 @@ use serde::{Deserialize, Serialize};
 use tokio::{
     fs, select,
     signal::unix::{SignalKind, signal},
-    sync::{Mutex, MutexGuard},
+    sync::{Mutex, OwnedMutexGuard},
     task_local,
     time::timeout,
 };
-use tokio_util::sync::CancellationToken;
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tracing::{info, warn};
 use url::Url;
 
@@ -61,6 +61,24 @@ impl Default for Config {
             backends: vec![],
             fallback: None,
         }
+    }
+}
+
+impl Config {
+    /// Checks that the config is valid
+    pub fn validate(&self) -> Result<(), Error> {
+        // Ensure all backend names are unique
+        if !self
+            .backends
+            .iter()
+            .chain(self.fallback.iter().flatten())
+            .map(|x| &x.name)
+            .all_unique()
+        {
+            bail!("Non-unique backend names");
+        }
+
+        Ok(())
     }
 }
 
@@ -142,7 +160,9 @@ pub struct BackendManager {
     backend_router_fallback: Arc<ArcSwapOption<LBBackendRouter>>,
     check_interval: Duration,
     check_timeout: Duration,
-    config: Mutex<Config>,
+    config: Arc<Mutex<Config>>,
+    /// Tracks the config updates in progress so that the shutdown waits for them
+    updates: TaskTracker,
     metrics_distributor: distributor::Metrics,
     metrics_health_checker: health_check::Metrics,
 }
@@ -169,7 +189,8 @@ impl BackendManager {
             backend_router_fallback: Arc::new(ArcSwapOption::empty()),
             check_interval,
             check_timeout,
-            config: Mutex::new(Config::default()),
+            config: Arc::new(Mutex::new(Config::default())),
+            updates: TaskTracker::new(),
             metrics_distributor: distributor::Metrics::new(registry),
             metrics_health_checker: health_check::Metrics::new(registry),
         }
@@ -275,62 +296,120 @@ impl BackendManager {
     }
 
     /// Applies the config to both main & fallback routers
-    pub async fn apply(&self, config: MutexGuard<'_, Config>) {
-        self.apply_main(&config).await;
-        self.apply_fallback(&config).await;
+    async fn apply(&self, config: &Config) {
+        self.apply_main(config).await;
+        self.apply_fallback(config).await;
 
         warn!("{self}: new backends applied");
     }
 
-    /// Loads the config from the file
-    pub async fn load_config(&self) -> Result<(), Error> {
-        // Load
+    /// Runs the given config update with the config locked.
+    ///
+    /// Waiting for the lock is cancellable: if the caller goes away while waiting then nothing is changed.
+    /// Once the lock is acquired, the update runs to completion in a separate task even if the caller
+    /// goes away (e.g. the API client disconnects), so that it's never abandoned halfway.
+    /// The task is tracked so that the shutdown waits for it to finish.
+    async fn run_update<T, F, Fut>(self: &Arc<Self>, f: F) -> Result<T, Error>
+    where
+        T: Send + 'static,
+        F: FnOnce(Arc<Self>, OwnedMutexGuard<Config>) -> Fut,
+        Fut: Future<Output = Result<T, Error>> + Send + 'static,
+    {
+        let config = self.config.clone().lock_owned().await;
+
+        // Don't start new updates once the shutdown has begun
+        if self.updates.is_closed() {
+            bail!("shutting down, config updates are not accepted");
+        }
+
+        let fut = f(self.clone(), config);
+        let name = self.to_string();
+
+        self.updates
+            .spawn(async move {
+                let res = fut.await;
+                // Log the error here too since the caller might be gone already
+                if let Err(e) = &res {
+                    warn!("{name}: config update failed: {e:#}");
+                }
+                res
+            })
+            .await
+            .context("config update task failed")?
+    }
+
+    /// Applies the given config and optionally persists it to disk.
+    /// The config must be locked by the caller.
+    async fn set_config_locked(
+        &self,
+        config: &mut Config,
+        config_new: Config,
+        persist: bool,
+    ) -> Result<(), Error> {
+        config_new.validate()?;
+
+        *config = config_new;
+        self.apply(config).await;
+
+        if persist {
+            self.persist(config)
+                .await
+                .context("unable to persist new config")?;
+        }
+
+        Ok(())
+    }
+
+    /// Loads the config from the file and applies it.
+    /// The config must be locked by the caller.
+    async fn load_config_locked(&self, config: &mut Config) -> Result<(), Error> {
         let cfg = fs::read(&self.config_path)
             .await
             .context("unable to read backends config")?;
 
-        let config: Config =
+        let config_new: Config =
             serde_yaml_ng::from_slice(&cfg).context("unable to parse backends config")?;
 
-        self.set_config(config).await?;
+        self.set_config_locked(config, config_new, false).await?;
 
         warn!("{self}: config file loaded");
         Ok(())
     }
 
-    /// Replaces the current config with the provided one
-    pub async fn set_config(&self, config_new: Config) -> Result<(), Error> {
-        // Ensure all backend names are unique
-        if !config_new
-            .backends
-            .iter()
-            .chain(config_new.fallback.iter().flatten())
-            .map(|x| x.name.clone())
-            .all_unique()
-        {
-            bail!("Non-unique backend names");
-        }
+    /// Writes the given config to disk
+    async fn persist(&self, config: &Config) -> Result<(), Error> {
+        let yaml =
+            serde_yaml_ng::to_string(config).context("unable to serialize config to YAML")?;
 
-        let mut config = self.config.lock().await;
-        *config = config_new;
-        self.apply(config).await;
+        fs::write(&self.config_path, &yaml)
+            .await
+            .context("unable to save config to disk")
+    }
 
-        Ok(())
+    /// Loads the config from the file and applies it
+    pub async fn load_config(self: &Arc<Self>) -> Result<(), Error> {
+        self.run_update(
+            |this, mut config| async move { this.load_config_locked(&mut config).await },
+        )
+        .await
+    }
+
+    /// Replaces the current config with the provided one and optionally persists it to disk
+    pub async fn set_config(
+        self: &Arc<Self>,
+        config_new: Config,
+        persist: bool,
+    ) -> Result<(), Error> {
+        self.run_update(move |this, mut config| async move {
+            this.set_config_locked(&mut config, config_new, persist)
+                .await
+        })
+        .await
     }
 
     /// Returns the current config
     pub async fn get_config(&self) -> Config {
         self.config.lock().await.clone()
-    }
-
-    /// Persists the current config to disk
-    pub async fn persist_config(&self) -> Result<(), Error> {
-        let cfg = self.config.lock().await.clone();
-        let yaml = serde_yaml_ng::to_string(&cfg).context("unable to serialize config to YAML")?;
-
-        fs::write(&self.config_path, &yaml)
-            .await
-            .context("unable to save config to disk")
     }
 
     /// Get the main or the fallback router
@@ -351,25 +430,29 @@ impl BackendManager {
     }
 
     /// Enables or disables the given backend
-    pub async fn set_backend_state(&self, name: String, enabled: bool) -> Result<(), Error> {
-        // Keep the config locked to ensure that we don't update it concurrently
-        let mut config = self.config.lock().await;
+    pub async fn set_backend_state(
+        self: &Arc<Self>,
+        name: String,
+        enabled: bool,
+    ) -> Result<(), Error> {
+        self.run_update(move |this, mut config| async move {
+            // Find the backend & set the status
+            let b = config
+                .backends
+                .iter_mut()
+                .find(|x| x.name == name)
+                .ok_or_else(|| anyhow!("Backend not found: {name}"))?;
+            b.enabled = enabled;
 
-        // Find the backend & set the status
-        let b = config
-            .backends
-            .iter_mut()
-            .find(|x| x.name == name)
-            .ok_or_else(|| anyhow!("Backend not found: {name}"))?;
-        b.enabled = enabled;
+            // Only the main backends are affected, so there's no need to rebuild the fallback router.
+            // Rebuilding it would wait for the health checks of all fallback backends
+            // (usually all of the backends in other regions) which can take up to `check_timeout`.
+            this.apply_main(&config).await;
 
-        // Only the main backends are affected, so there's no need to rebuild the fallback router.
-        // Rebuilding it would wait for the health checks of all fallback backends
-        // (usually all of the backends in other regions) which can take up to `check_timeout`.
-        self.apply_main(&config).await;
-
-        warn!("{self}: main backends applied");
-        Ok(())
+            warn!("{this}: main backends applied");
+            Ok(())
+        })
+        .await
     }
 }
 
@@ -382,13 +465,19 @@ impl Run for BackendManager {
         loop {
             select! {
                 () = token.cancelled() => {
+                    // Wait for the config updates in progress to finish
+                    self.updates.close();
+                    self.updates.wait().await;
+
                     warn!("{self}: task stopped");
                     break;
                 },
 
                 _ = sig.recv() => {
                     warn!("{self}: received config reload signal");
-                    match self.load_config().await {
+
+                    let mut config = self.config.lock().await;
+                    match self.load_config_locked(&mut config).await {
                         Ok(()) => warn!("{self}: configuration reloaded successfully"),
                         Err(e) => warn!("{self}: failed to reload config: {e:#}"),
                     }
@@ -496,7 +585,7 @@ impl ExecutesRequest<Arc<Backend>> for RequestExecutor {
 }
 
 #[cfg(test)]
-mod test {
+pub mod test {
     use std::{net::SocketAddr, path::PathBuf, time::Instant};
 
     use axum::Router;
@@ -515,19 +604,19 @@ mod test {
         }
     }
 
-    fn new_manager() -> BackendManager {
+    fn new_manager() -> Arc<BackendManager> {
         let client = Arc::new(HyperClient::default());
-        BackendManager::new(
+        Arc::new(BackendManager::new(
             client,
             PathBuf::new(),
             Duration::from_millis(50),
             Duration::from_millis(500),
             &Registry::new(),
-        )
+        ))
     }
 
     /// Spawns a minimal HTTP server that responds to any request (including `/health`) with 200.
-    async fn spawn_healthy_backend() -> SocketAddr {
+    pub async fn spawn_healthy_backend() -> SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
@@ -551,7 +640,7 @@ mod test {
 
     /// Spawns a TCP listener that accepts connections but never responds,
     /// so that health checks against it always time out.
-    async fn spawn_blackhole_backend() -> SocketAddr {
+    pub async fn spawn_blackhole_backend() -> SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
@@ -600,7 +689,7 @@ mod test {
             fallback: Some(vec![backend_conf("dup", "http://127.0.0.1:2")]),
         };
 
-        let err = bm.set_config(config).await.unwrap_err();
+        let err = bm.set_config(config, false).await.unwrap_err();
         assert!(err.to_string().contains("Non-unique"));
     }
 
@@ -614,7 +703,7 @@ mod test {
             fallback: None,
         };
 
-        bm.set_config(config.clone()).await.unwrap();
+        bm.set_config(config.clone(), false).await.unwrap();
         assert_eq!(bm.get_config().await, config);
         assert!(bm.get_backend_router().is_none());
         assert!(bm.get_healthy_nodes().is_empty());
@@ -643,7 +732,7 @@ mod test {
             }],
             fallback: None,
         };
-        bm.set_config(config).await.unwrap();
+        bm.set_config(config, false).await.unwrap();
         assert!(bm.get_backend_router().is_none());
 
         // Enabling it triggers a health check against a closed port -> stays unhealthy
@@ -675,7 +764,7 @@ mod test {
         };
 
         // This one waits for the fallback health check to time out
-        bm.set_config(config).await.unwrap();
+        bm.set_config(config, false).await.unwrap();
 
         // Enabling a main backend must not wait for the fallback health checks
         let start = Instant::now();
@@ -706,7 +795,7 @@ mod test {
             fallback: None,
         };
 
-        bm.set_config(config).await.unwrap();
+        bm.set_config(config, false).await.unwrap();
 
         // The old router has a health check of "bad" in-flight most of the time,
         // stopping it must not block the API call
@@ -724,6 +813,77 @@ mod test {
     }
 
     #[tokio::test]
+    async fn test_update_cancelled_while_waiting_for_lock_does_nothing() {
+        let bm = new_manager();
+        let healthy_addr = spawn_healthy_backend().await;
+        let blackhole_addr = spawn_blackhole_backend().await;
+
+        let config = Config {
+            strategy: Strategy::LeastOutstandingRequests,
+            backends: vec![
+                backend_conf("good", &format!("http://{healthy_addr}")),
+                backend_conf("bad", &format!("http://{blackhole_addr}")),
+            ],
+            fallback: None,
+        };
+
+        // Applying it holds the lock for the health check timeout due to the "bad" backend
+        let bm2 = bm.clone();
+        let slow = tokio::spawn(async move { bm2.set_config(config, false).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // This one queues up behind it and its caller goes away before it gets the lock
+        let bm2 = bm.clone();
+        let queued = tokio::spawn(async move { bm2.set_backend_state("good".into(), false).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!queued.is_finished());
+        queued.abort();
+
+        slow.await.unwrap().unwrap();
+
+        // The cancelled update must never be applied
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let cfg = bm.get_config().await;
+        assert!(cfg.backends.iter().all(|x| x.enabled));
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_waits_for_updates() {
+        let bm = new_manager();
+        let blackhole_addr = spawn_blackhole_backend().await;
+
+        let token = CancellationToken::new();
+        let bm2 = bm.clone();
+        let token2 = token.clone();
+        let runner = tokio::spawn(async move { bm2.run(token2).await });
+
+        let config = Config {
+            strategy: Strategy::LeastOutstandingRequests,
+            backends: vec![backend_conf("bad", &format!("http://{blackhole_addr}"))],
+            fallback: None,
+        };
+
+        // Start an update that takes the health check timeout and make its caller go away
+        let bm2 = bm.clone();
+        let config2 = config.clone();
+        let caller = tokio::spawn(async move { bm2.set_config(config2, false).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        caller.abort();
+
+        // Shutdown must wait for the update to finish
+        token.cancel();
+        runner.await.unwrap().unwrap();
+        assert_eq!(
+            *bm.config.try_lock().expect("update must be finished"),
+            config
+        );
+
+        // No new updates are accepted after that
+        assert!(bm.set_config(Config::default(), false).await.is_err());
+        assert_eq!(bm.get_config().await, config);
+    }
+
+    #[tokio::test]
     async fn test_get_backend_router_falls_back_when_main_unhealthy() {
         let bm = new_manager();
         let healthy_addr = spawn_healthy_backend().await;
@@ -734,7 +894,7 @@ mod test {
             fallback: Some(vec![backend_conf("fb", &format!("http://{healthy_addr}"))]),
         };
 
-        bm.set_config(config).await.unwrap();
+        bm.set_config(config, false).await.unwrap();
 
         // Main backend is unreachable, so it has no healthy nodes
         assert!(bm.get_healthy_nodes().is_empty());

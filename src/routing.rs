@@ -593,10 +593,10 @@ mod test {
     #[tokio::test]
     async fn test_handler_no_healthy_backends_returns_service_unavailable() {
         let bm = new_backend_manager();
-        bm.set_config(new_config(
-            &[],
-            Some(&[backend_conf("fallback", "http://127.0.0.1:1")]),
-        ))
+        bm.set_config(
+            new_config(&[], Some(&[backend_conf("fallback", "http://127.0.0.1:1")])),
+            false,
+        )
         .await
         .unwrap();
 
@@ -623,10 +623,10 @@ mod test {
         let addr = spawn_fake_backend(FakeBackendBehavior::Drop).await;
 
         let bm = new_backend_manager();
-        bm.set_config(new_config(
-            &[backend_conf("main", &format!("http://{addr}"))],
-            None,
-        ))
+        bm.set_config(
+            new_config(&[backend_conf("main", &format!("http://{addr}"))], None),
+            false,
+        )
         .await
         .unwrap();
 
@@ -653,10 +653,10 @@ mod test {
         let addr = spawn_fake_backend(FakeBackendBehavior::StallBody).await;
 
         let bm = new_backend_manager();
-        bm.set_config(new_config(
-            &[backend_conf("main", &format!("http://{addr}"))],
-            None,
-        ))
+        bm.set_config(
+            new_config(&[backend_conf("main", &format!("http://{addr}"))], None),
+            false,
+        )
         .await
         .unwrap();
 
@@ -684,10 +684,10 @@ mod test {
         let addr = spawn_fake_backend(FakeBackendBehavior::TruncateBody).await;
 
         let bm = new_backend_manager();
-        bm.set_config(new_config(
-            &[backend_conf("main", &format!("http://{addr}"))],
-            None,
-        ))
+        bm.set_config(
+            new_config(&[backend_conf("main", &format!("http://{addr}"))], None),
+            false,
+        )
         .await
         .unwrap();
 
@@ -712,10 +712,10 @@ mod test {
     #[tokio::test]
     async fn test_handler_request_body_buffer_timeout_returns_request_timeout() {
         let bm = new_backend_manager();
-        bm.set_config(new_config(
-            &[],
-            Some(&[backend_conf("fallback", "http://127.0.0.1:1")]),
-        ))
+        bm.set_config(
+            new_config(&[], Some(&[backend_conf("fallback", "http://127.0.0.1:1")])),
+            false,
+        )
         .await
         .unwrap();
 
