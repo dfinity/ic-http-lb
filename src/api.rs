@@ -67,10 +67,13 @@ pub async fn backend_handler(
         "enable" | "disable" => {
             warn!("API request: {action} backend {backend}");
 
-            state
-                .backend_manager
-                .set_backend_state(backend, action == "enable")
+            // Run in a separate task so that the change is not abandoned halfway
+            // if the client disconnects (e.g. times out)
+            let bm = state.backend_manager.clone();
+            let enabled = action == "enable";
+            tokio::spawn(async move { bm.set_backend_state(backend, enabled).await })
                 .await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {e:#}")))?
                 .map_err(|e| (StatusCode::BAD_REQUEST, format!("Error: {e:#}")))?;
         }
 
@@ -100,7 +103,15 @@ pub async fn log_handler(
 pub async fn config_reload(State(state): State<Arc<ApiState>>) -> Response {
     warn!("API request: config reload");
 
-    if let Err(e) = state.backend_manager.load_config().await {
+    // Run in a separate task so that the reload is not abandoned halfway
+    // if the client disconnects (e.g. times out)
+    let bm = state.backend_manager.clone();
+    let res = match tokio::spawn(async move { bm.load_config().await }).await {
+        Ok(v) => v,
+        Err(e) => Err(e.into()),
+    };
+
+    if let Err(e) = res {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Error reloading config: {e:#}"),
@@ -141,19 +152,31 @@ pub async fn config_put(
         ));
     };
 
-    state.backend_manager.set_config(cfg).await.map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            format!("Unable to apply new config: {e:#}"),
-        )
-    })?;
+    // Run in a separate task so that the change is not abandoned halfway
+    // if the client disconnects (e.g. times out)
+    let bm = state.backend_manager.clone();
+    tokio::spawn(async move {
+        bm.set_config(cfg).await.map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("Unable to apply new config: {e:#}"),
+            )
+        })?;
 
-    state.backend_manager.persist_config().await.map_err(|e| {
+        bm.persist_config().await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Unable to persist new config: {e:#}"),
+            )
+        })
+    })
+    .await
+    .map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Unable to persist new config: {e:#}"),
+            format!("Unable to apply new config: {e:#}"),
         )
-    })?;
+    })??;
 
     Ok((StatusCode::OK, "Ok\n"))
 }

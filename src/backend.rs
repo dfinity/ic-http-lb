@@ -229,34 +229,42 @@ impl BackendManager {
         // Install the new one
         router.store(router_new);
 
-        // Shut down the old one if any
+        // Shut down the old one if any.
+        // It's not reachable anymore, so do it in the background: stopping waits for
+        // the in-flight health checks to finish which can take up to `check_timeout`.
         if let Some(v) = router_old {
-            v.stop().await;
-            warn!("{self}: old backend router stopped");
+            let name = self.to_string();
+            tokio::spawn(async move {
+                v.stop().await;
+                warn!("{name}: old backend router stopped");
+            });
         }
     }
 
-    /// Applies the config
-    pub async fn apply(&self, config: MutexGuard<'_, Config>) {
+    /// Applies the main backends from the config to the main router
+    async fn apply_main(&self, config: &Config) {
         // Filter out disabled backends
         let backends_enabled = config
             .backends
-            .clone()
-            .into_iter()
+            .iter()
             .filter(|x| x.enabled)
+            .cloned()
             .collect::<Vec<_>>();
 
-        let backends_fallback_enabled = config
-            .fallback
-            .clone()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|x| x.enabled)
-            .collect::<Vec<_>>();
-
-        // Update main & fallback routers
         self.update_router(&self.backend_router, backends_enabled, config.strategy)
             .await;
+    }
+
+    /// Applies the fallback backends from the config to the fallback router
+    async fn apply_fallback(&self, config: &Config) {
+        // Filter out disabled backends
+        let backends_fallback_enabled = config
+            .fallback
+            .iter()
+            .flatten()
+            .filter(|x| x.enabled)
+            .cloned()
+            .collect::<Vec<_>>();
 
         self.update_router(
             &self.backend_router_fallback,
@@ -264,6 +272,12 @@ impl BackendManager {
             config.strategy,
         )
         .await;
+    }
+
+    /// Applies the config to both main & fallback routers
+    pub async fn apply(&self, config: MutexGuard<'_, Config>) {
+        self.apply_main(&config).await;
+        self.apply_fallback(&config).await;
 
         warn!("{self}: new backends applied");
     }
@@ -349,9 +363,12 @@ impl BackendManager {
             .ok_or_else(|| anyhow!("Backend not found: {name}"))?;
         b.enabled = enabled;
 
-        // Apply the new config
-        self.apply(config).await;
+        // Only the main backends are affected, so there's no need to rebuild the fallback router.
+        // Rebuilding it would wait for the health checks of all fallback backends
+        // (usually all of the backends in other regions) which can take up to `check_timeout`.
+        self.apply_main(&config).await;
 
+        warn!("{self}: main backends applied");
         Ok(())
     }
 }
@@ -480,7 +497,7 @@ impl ExecutesRequest<Arc<Backend>> for RequestExecutor {
 
 #[cfg(test)]
 mod test {
-    use std::{net::SocketAddr, path::PathBuf};
+    use std::{net::SocketAddr, path::PathBuf, time::Instant};
 
     use axum::Router;
     use http::StatusCode;
@@ -527,6 +544,27 @@ mod test {
                 .serve_with_listener(listener.into(), CancellationToken::new())
                 .await
                 .unwrap();
+        });
+
+        addr
+    }
+
+    /// Spawns a TCP listener that accepts connections but never responds,
+    /// so that health checks against it always time out.
+    async fn spawn_blackhole_backend() -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            loop {
+                let (s, _) = listener.accept().await.unwrap();
+
+                // Keep the connection open without ever responding
+                tokio::spawn(async move {
+                    let _s = s;
+                    std::future::pending::<()>().await;
+                });
+            }
         });
 
         addr
@@ -616,6 +654,73 @@ mod test {
         // Disabling it again removes the router entirely
         bm.set_backend_state("foo".into(), false).await.unwrap();
         assert!(bm.get_backend_router().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_set_backend_state_ignores_slow_fallback() {
+        let bm = new_manager();
+        let healthy_addr = spawn_healthy_backend().await;
+        let blackhole_addr = spawn_blackhole_backend().await;
+
+        let config = Config {
+            strategy: Strategy::LeastOutstandingRequests,
+            backends: vec![BackendConf {
+                enabled: false,
+                ..backend_conf("main", &format!("http://{healthy_addr}"))
+            }],
+            fallback: Some(vec![backend_conf(
+                "fb",
+                &format!("http://{blackhole_addr}"),
+            )]),
+        };
+
+        // This one waits for the fallback health check to time out
+        bm.set_config(config).await.unwrap();
+
+        // Enabling a main backend must not wait for the fallback health checks
+        let start = Instant::now();
+        bm.set_backend_state("main".into(), true).await.unwrap();
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(250),
+            "enabling took {elapsed:?}"
+        );
+
+        let healthy = bm.get_healthy_nodes();
+        assert_eq!(healthy.len(), 1);
+        assert_eq!(healthy[0].name, "main");
+    }
+
+    #[tokio::test]
+    async fn test_set_backend_state_does_not_wait_for_old_router() {
+        let bm = new_manager();
+        let healthy_addr = spawn_healthy_backend().await;
+        let blackhole_addr = spawn_blackhole_backend().await;
+
+        let config = Config {
+            strategy: Strategy::LeastOutstandingRequests,
+            backends: vec![
+                backend_conf("good", &format!("http://{healthy_addr}")),
+                backend_conf("bad", &format!("http://{blackhole_addr}")),
+            ],
+            fallback: None,
+        };
+
+        bm.set_config(config).await.unwrap();
+
+        // The old router has a health check of "bad" in-flight most of the time,
+        // stopping it must not block the API call
+        let start = Instant::now();
+        bm.set_backend_state("bad".into(), false).await.unwrap();
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(250),
+            "disabling took {elapsed:?}"
+        );
+
+        let healthy = bm.get_healthy_nodes();
+        assert_eq!(healthy.len(), 1);
+        assert_eq!(healthy[0].name, "good");
     }
 
     #[tokio::test]
