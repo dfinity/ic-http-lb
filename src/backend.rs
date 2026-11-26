@@ -309,6 +309,8 @@ impl BackendManager {
     /// Once the lock is acquired, the update runs to completion in a separate task even if the caller
     /// goes away (e.g. the API client disconnects), so that it's never abandoned halfway.
     /// The task is tracked so that the shutdown waits for it to finish.
+    ///
+    /// The config lock is held until the update finishes: the shutdown in `run()` relies on this.
     async fn run_update<T, F, Fut>(self: &Arc<Self>, f: F) -> Result<T, Error>
     where
         T: Send + 'static,
@@ -465,8 +467,16 @@ impl Run for BackendManager {
         loop {
             select! {
                 () = token.cancelled() => {
-                    // Wait for the config updates in progress to finish
+                    // Stop accepting new config updates
                     self.updates.close();
+
+                    // An update that got past the `is_closed()` check in `run_update()` did so while
+                    // holding the config lock, and it keeps the lock until it finishes.
+                    // Taking the lock here waits for such an update, even if it wasn't
+                    // registered with the tracker yet when `wait()` below would have returned.
+                    drop(self.config.lock().await);
+
+                    // Wait for the config updates in progress to finish
                     self.updates.wait().await;
 
                     warn!("{self}: task stopped");
