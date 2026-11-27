@@ -67,6 +67,7 @@ pub async fn backend_handler(
         "enable" | "disable" => {
             warn!("API request: {action} backend {backend}");
 
+            // Once started, the change runs to completion even if the client disconnects
             state
                 .backend_manager
                 .set_backend_state(backend, action == "enable")
@@ -100,6 +101,7 @@ pub async fn log_handler(
 pub async fn config_reload(State(state): State<Arc<ApiState>>) -> Response {
     warn!("API request: config reload");
 
+    // Once started, the reload runs to completion even if the client disconnects
     if let Err(e) = state.backend_manager.load_config().await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -141,19 +143,26 @@ pub async fn config_put(
         ));
     };
 
-    state.backend_manager.set_config(cfg).await.map_err(|e| {
-        (
+    if let Err(e) = cfg.validate() {
+        return Err((
             StatusCode::BAD_REQUEST,
             format!("Unable to apply new config: {e:#}"),
-        )
-    })?;
+        ));
+    }
 
-    state.backend_manager.persist_config().await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Unable to persist new config: {e:#}"),
-        )
-    })?;
+    // Once started, the update runs to completion even if the client disconnects.
+    // The error might come from persisting the config after it was already applied,
+    // the error chain tells which stage failed.
+    state
+        .backend_manager
+        .set_config(cfg, true)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Config update failed: {e:#}"),
+            )
+        })?;
 
     Ok((StatusCode::OK, "Ok\n"))
 }
@@ -236,6 +245,107 @@ mod test {
     use tracing_subscriber::reload;
 
     use super::*;
+    use crate::backend::test::spawn_blackhole_backend;
+
+    #[tokio::test]
+    async fn test_config_put_survives_client_disconnect() {
+        let _ = ic_bn_lib::rustls::crypto::aws_lc_rs::default_provider().install_default();
+
+        let args: Vec<&str> = vec!["", "--config-path", "foo", "--api-token", "deadbeef"];
+        let cli = Cli::parse_from(args);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+
+        let bm = Arc::new(BackendManager::new(
+            Arc::new(HyperClient::default()),
+            path.clone(),
+            Duration::from_millis(50),
+            Duration::from_millis(500),
+            &Registry::new(),
+        ));
+
+        let (_, reload_handle) = reload::Layer::new(LevelFilter::WARN);
+        let router = setup_api_axum_router(&cli, bm.clone(), reload_handle, None).unwrap();
+
+        // The backend never responds, so applying the config takes the health check timeout
+        let blackhole_addr = spawn_blackhole_backend().await;
+        let config = format!(
+            "strategy: wrr\nbackends:\n  - name: bad\n    url: http://{blackhole_addr}\n    weight: 1\n    enabled: true\n"
+        );
+        let expected: Config = serde_yaml_ng::from_str(&config).unwrap();
+
+        let mut req = Request::builder()
+            .uri("/config/put")
+            .method(Method::PUT)
+            .body(Body::from(config))
+            .unwrap();
+        *req.uri_mut() = Uri::from_static("http://foo/config/put");
+        req.headers_mut()
+            .insert(AUTHORIZATION, hval!("Bearer deadbeef"));
+
+        // Drop the request while the config is being applied
+        let handle = tokio::spawn(router.oneshot(req));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!handle.is_finished());
+        handle.abort();
+
+        // The config must still be applied and persisted.
+        // `get_config()` waits for the update to release the lock.
+        assert_eq!(bm.get_config().await, expected);
+
+        let persisted: Config = serde_yaml_ng::from_slice(&fs::read(&path).await.unwrap()).unwrap();
+        assert_eq!(persisted, expected);
+    }
+
+    #[tokio::test]
+    async fn test_config_put_persist_failure() {
+        let _ = ic_bn_lib::rustls::crypto::aws_lc_rs::default_provider().install_default();
+
+        let args: Vec<&str> = vec!["", "--config-path", "foo", "--api-token", "deadbeef"];
+        let cli = Cli::parse_from(args);
+
+        // The directory doesn't exist, so persisting the config fails
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nonexistent").join("config.yaml");
+
+        let bm = Arc::new(BackendManager::new(
+            Arc::new(HyperClient::default()),
+            path,
+            Duration::from_millis(50),
+            Duration::from_millis(500),
+            &Registry::new(),
+        ));
+
+        let (_, reload_handle) = reload::Layer::new(LevelFilter::WARN);
+        let router = setup_api_axum_router(&cli, bm.clone(), reload_handle, None).unwrap();
+
+        let config = "strategy: wrr\nbackends: []\n";
+        let expected: Config = serde_yaml_ng::from_str(config).unwrap();
+
+        let mut req = Request::builder()
+            .uri("/config/put")
+            .method(Method::PUT)
+            .body(Body::from(config))
+            .unwrap();
+        *req.uri_mut() = Uri::from_static("http://foo/config/put");
+        req.headers_mut()
+            .insert(AUTHORIZATION, hval!("Bearer deadbeef"));
+
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        // The error must not claim that the config wasn't applied, but say which stage failed
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&body);
+        assert!(body.starts_with("Config update failed:"), "{body}");
+        assert!(body.contains("unable to persist new config"), "{body}");
+
+        // The config was applied even though persisting it failed
+        assert_eq!(bm.get_config().await, expected);
+    }
 
     #[tokio::test]
     async fn test_api_auth() {
